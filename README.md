@@ -6,7 +6,7 @@
 
 ![Build](https://github.com/fcjack/putioarr/actions/workflows/main.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Go Version](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white)
+![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-jackcoelho%2Fputioarr-2496ED?logo=docker&logoColor=white)
 
 [Getting Started](#getting-started) | [Configuration](#configuration) | [Put.io + *Arr Setup](#putio--arr-integration) | [Monitoring](#monitoring) | [Contributing](#contributing)
@@ -112,7 +112,7 @@ go build -o seedbox_downloader ./cmd/seedbox_downloader
 ./seedbox_downloader
 ```
 
-> Requires Go 1.23+ and CGO enabled (for SQLite).
+> Requires Go 1.26+ and CGO enabled (for SQLite).
 
 ## Docker Compose
 
@@ -307,7 +307,7 @@ go test -race ./...
 golangci-lint run
 ```
 
-- **Go version:** 1.23+
+- **Go version:** 1.26+
 - **Linter config:** [`.golangci.yml`](.golangci.yml)
 - CI runs lint + tests + race detection on every PR
 
