@@ -557,13 +557,12 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 
 	if trackLocal && isPutioTransferComplete(transfer.Status) && localStatus != "downloaded" {
 		localDownloaded := computeLocalDownloadedBytes(h.localDownloadDir, transfer)
+		if localDownloaded > transfer.Size {
+			localDownloaded = transfer.Size
+		}
 
 		downloadedEver = localDownloaded
 		leftUntilDone = transfer.Size - localDownloaded
-		if leftUntilDone < 0 {
-			leftUntilDone = 0
-		}
-
 		isFinished = false
 
 		switch localStatus {
