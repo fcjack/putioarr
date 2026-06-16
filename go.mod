@@ -12,7 +12,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/mattn/go-sqlite3 v1.14.14
-	github.com/putdotio/go-putio v1.7.2
+	github.com/putdotio/go-putio v1.7.3
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/bencode v1.0.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.63.0
