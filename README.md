@@ -4,10 +4,10 @@
 
 **Automated media pipeline that bridges your seedbox with Sonarr, Radarr, and other *Arr applications.**
 
-![Build](https://github.com/italolelis/seedbox_downloader/actions/workflows/main.yml/badge.svg)
+![Build](https://github.com/fcjack/putioarr/actions/workflows/main.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Go Version](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-jackcoelho%2Fputioarr-2496ED?logo=docker&logoColor=white)
 
 [Getting Started](#getting-started) | [Configuration](#configuration) | [Put.io + *Arr Setup](#putio--arr-integration) | [Monitoring](#monitoring) | [Contributing](#contributing)
 
@@ -85,7 +85,7 @@ docker run --rm \
   -e TARGET_LABEL=sonarr \
   -e DOWNLOAD_DIR=/downloads \
   -v /path/to/downloads:/downloads \
-  ghcr.io/italolelis/seedbox_downloader:latest
+  jackcoelho/putioarr:latest
 ```
 
 **Put.io mode:**
@@ -100,14 +100,14 @@ docker run --rm -p 9091:9091 \
   -e TRANSMISSION_USERNAME=admin \
   -e TRANSMISSION_PASSWORD=secret \
   -v /path/to/downloads:/downloads \
-  ghcr.io/italolelis/seedbox_downloader:latest
+  jackcoelho/putioarr:latest
 ```
 
 ### Build from source
 
 ```sh
-git clone https://github.com/italolelis/seedbox_downloader.git
-cd seedbox_downloader
+git clone https://github.com/fcjack/putioarr.git
+cd putioarr
 go build -o seedbox_downloader ./cmd/seedbox_downloader
 ./seedbox_downloader
 ```
@@ -119,7 +119,7 @@ go build -o seedbox_downloader ./cmd/seedbox_downloader
 ```yaml
 services:
   seedbox_downloader:
-    image: ghcr.io/italolelis/seedbox_downloader:latest
+    image: jackcoelho/putioarr:latest
     container_name: seedbox_downloader
     environment:
       DOWNLOAD_CLIENT: "putio"
