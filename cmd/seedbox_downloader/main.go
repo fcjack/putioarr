@@ -142,7 +142,7 @@ func run(ctx context.Context) error {
 
 	logger.InfoContext(ctx, "starting HTTP server")
 
-	servers, err := startServers(ctx, cfg, tel)
+	servers, err := startServers(ctx, cfg, tel, services.localDownloads)
 	if err != nil {
 		return err
 	}
@@ -161,6 +161,7 @@ func run(ctx context.Context) error {
 type services struct {
 	downloader           *downloader.Downloader
 	transferOrchestrator *transfer.TransferOrchestrator
+	localDownloads       storage.DownloadRepository
 }
 
 func (s *services) Close() {
@@ -293,15 +294,18 @@ func initializeServices(ctx context.Context, cfg *config, tel *telemetry.Telemet
 	return &services{
 		downloader:           downloader,
 		transferOrchestrator: transferOrchestrator,
+		localDownloads:       dr,
 	}, nil
 }
 
-func startServers(ctx context.Context, cfg *config, tel *telemetry.Telemetry) (*servers, error) {
+func startServers(
+	ctx context.Context, cfg *config, tel *telemetry.Telemetry, localDownloads rest.LocalDownloadTracker,
+) (*servers, error) {
 	logger := logctx.LoggerFromContext(ctx)
 
 	serverErrors := make(chan error, 1)
 
-	server, err := setupServer(ctx, cfg, tel)
+	server, err := setupServer(ctx, cfg, tel, localDownloads)
 	if err != nil {
 		logger.ErrorContext(ctx, "server setup failed",
 			"component", "http_server",
@@ -558,7 +562,9 @@ func buildDownloadClient(cfg *config) (transfer.DownloadClient, error) {
 }
 
 // setupServer prepares the handlers and services to create the http rest server.
-func setupServer(ctx context.Context, cfg *config, tel *telemetry.Telemetry) (*http.Server, error) {
+func setupServer(
+	ctx context.Context, cfg *config, tel *telemetry.Telemetry, localDownloads rest.LocalDownloadTracker,
+) (*http.Server, error) {
 	r := chi.NewRouter()
 
 	// Middleware order is critical:
@@ -580,7 +586,16 @@ func setupServer(ctx context.Context, cfg *config, tel *telemetry.Telemetry) (*h
 	}
 
 	if putioClient, ok := originalClient.(*putio.Client); ok {
-		tHandler = rest.NewTransmissionHandler(cfg.Transmission.Username, cfg.Transmission.Password, putioClient, cfg.TargetLabel, cfg.PutioBaseDir, tel)
+		tHandler = rest.NewTransmissionHandler(
+			cfg.Transmission.Username,
+			cfg.Transmission.Password,
+			putioClient,
+			cfg.TargetLabel,
+			cfg.PutioBaseDir,
+			cfg.DownloadDir,
+			localDownloads,
+			tel,
+		)
 		r.Mount("/", tHandler.Routes())
 	} else {
 		logger := logctx.LoggerFromContext(ctx)

@@ -9,12 +9,24 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/italolelis/seedbox_downloader/internal/storage"
 	"github.com/italolelis/seedbox_downloader/internal/transfer"
 	"github.com/stretchr/testify/require"
 )
+
+// mockLocalDownloadTracker implements LocalDownloadTracker for testing.
+type mockLocalDownloadTracker struct {
+	records []storage.DownloadRecord
+	err     error
+}
+
+func (m *mockLocalDownloadTracker) GetDownloads() ([]storage.DownloadRecord, error) {
+	return m.records, m.err
+}
 
 // mockPutioClient implements DownloadClient interface for testing.
 type mockPutioClient struct {
@@ -345,7 +357,7 @@ func TestHandleTorrentAdd_MetaInfo_Success(t *testing.T) {
 		},
 	}
 
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	reqBody := fmt.Sprintf(`{
 		"method": "torrent-add",
@@ -382,7 +394,7 @@ func TestHandleTorrentAdd_MagnetLink_BackwardCompatibility(t *testing.T) {
 		},
 	}
 
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	reqBody := `{
 		"method": "torrent-add",
@@ -417,7 +429,7 @@ func TestHandleTorrentAdd_MetaInfo_PrioritizedOverFileName(t *testing.T) {
 
 	mockClient := &mockPutioClient{}
 
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	// Request with BOTH metainfo and filename
 	reqBody := fmt.Sprintf(`{
@@ -443,7 +455,7 @@ func TestHandleTorrentAdd_MetaInfo_PrioritizedOverFileName(t *testing.T) {
 
 func TestHandleTorrentAdd_InvalidBase64_ReturnsTransmissionError(t *testing.T) {
 	mockClient := &mockPutioClient{}
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	// Invalid base64 - contains characters not in base64 alphabet
 	reqBody := `{
@@ -470,7 +482,7 @@ func TestHandleTorrentAdd_InvalidBase64_ReturnsTransmissionError(t *testing.T) {
 
 func TestHandleTorrentAdd_InvalidBencode_ReturnsTransmissionError(t *testing.T) {
 	mockClient := &mockPutioClient{}
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	// Valid base64 but invalid bencode content
 	invalidBencode := base64.StdEncoding.EncodeToString([]byte("not valid bencode"))
@@ -498,7 +510,7 @@ func TestHandleTorrentAdd_InvalidBencode_ReturnsTransmissionError(t *testing.T) 
 
 func TestHandleTorrentAdd_AuthenticationRequired(t *testing.T) {
 	mockClient := &mockPutioClient{}
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	reqBody := `{"method": "torrent-add", "arguments": {"filename": "magnet:?xt=urn:btih:TEST"}}`
 
@@ -514,7 +526,7 @@ func TestHandleTorrentAdd_AuthenticationRequired(t *testing.T) {
 
 func TestHandleTorrentAdd_WrongCredentials(t *testing.T) {
 	mockClient := &mockPutioClient{}
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	reqBody := `{"method": "torrent-add", "arguments": {"filename": "magnet:?xt=urn:btih:TEST"}}`
 
@@ -547,7 +559,7 @@ func TestHandleTorrentAdd_RealTorrentFile(t *testing.T) {
 		},
 	}
 
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	reqBody := fmt.Sprintf(`{
 		"method": "torrent-add",
@@ -605,7 +617,7 @@ func TestHandleTorrentGet_StatusMapping(t *testing.T) {
 				},
 			}
 
-			handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+			handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 			reqBody := `{"method": "torrent-get", "arguments": {"fields": ["status"]}}`
 			req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
@@ -676,7 +688,7 @@ func TestHandleTorrentGet_ErrorStringPopulated(t *testing.T) {
 				},
 			}
 
-			handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+			handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 			reqBody := `{"method": "torrent-get", "arguments": {}}`
 			req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
@@ -724,7 +736,7 @@ func TestHandleTorrentGet_PeerAndSpeedFields(t *testing.T) {
 		},
 	}
 
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "test-label", "/downloads", "", nil, nil)
 
 	reqBody := `{"method": "torrent-get", "arguments": {}}`
 	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
@@ -765,7 +777,7 @@ func TestHandleTorrentGet_LabelsPopulated(t *testing.T) {
 		},
 	}
 
-	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "mytag", "/downloads", nil)
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "mytag", "/downloads", "", nil, nil)
 
 	reqBody := `{"method": "torrent-get", "arguments": {}}`
 	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
@@ -786,4 +798,231 @@ func TestHandleTorrentGet_LabelsPopulated(t *testing.T) {
 	require.Len(t, args.Torrents, 1)
 
 	require.Equal(t, []string{"mytag"}, args.Torrents[0].Labels)
+}
+
+// getTorrents is a helper that issues a torrent-get request and returns the parsed torrents.
+func getTorrents(t *testing.T, handler *TransmissionHandler) []TransmissionTorrent {
+	t.Helper()
+
+	reqBody := `{"method": "torrent-get", "arguments": {}}`
+	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
+	req.SetBasicAuth("testuser", "testpass")
+
+	w := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp TransmissionResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "success", resp.Result)
+
+	var args struct {
+		Torrents []TransmissionTorrent `json:"torrents"`
+	}
+	require.NoError(t, json.Unmarshal(resp.Arguments, &args))
+
+	return args.Torrents
+}
+
+// TestHandleTorrentGet_PutioCompleteLocalInProgress verifies the core invariant from issue #1:
+// when Put.io reports COMPLETED but the local download is still in progress, the proxy must
+// keep reporting status=downloading / isFinished=false so *arr does not import a partial file.
+func TestHandleTorrentGet_PutioCompleteLocalInProgress(t *testing.T) {
+	localDir := t.TempDir()
+
+	// Simulate a partially written local file (1.5 GB of an expected 6.2 GB single-file mkv).
+	const partialSize = int64(1_506_901_282)
+	const totalSize = int64(6_662_229_608)
+	relPath := "ExampleShow.S02E05.mkv"
+	require.NoError(t, os.WriteFile(filepath.Join(localDir, relPath), make([]byte, 1024), 0o644))
+	require.NoError(t, os.Truncate(filepath.Join(localDir, relPath), partialSize))
+
+	mockClient := &mockPutioClient{
+		getTaggedTorrentsFunc: func(ctx context.Context, label string) ([]*transfer.Transfer, error) {
+			return []*transfer.Transfer{
+				{
+					ID:         "1",
+					Name:       relPath,
+					Size:       totalSize,
+					Downloaded: totalSize, // Put.io reports its own transfer as fully downloaded
+					Status:     "COMPLETED",
+					Files:      []*transfer.File{{ID: 1, Path: relPath, Size: totalSize}},
+				},
+			}, nil
+		},
+	}
+
+	// No DB record yet (or status "downloading") -> local download not finished.
+	tracker := &mockLocalDownloadTracker{records: []storage.DownloadRecord{{DownloadID: "1", Status: "downloading"}}}
+
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "tv", "/downloads", localDir, tracker, nil)
+
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+
+	got := torrents[0]
+	require.Equal(t, StatusDownload, got.Status, "must report downloading while local download in progress")
+	require.False(t, got.IsFinished, "must not be finished until local file fully written")
+	require.Equal(t, partialSize, got.DownloadedEver, "downloadedEver must reflect local progress")
+	require.Equal(t, totalSize-partialSize, got.LeftUntilDone, "leftUntilDone must reflect local progress")
+}
+
+// TestHandleTorrentGet_PutioCompleteNoLocalRecord covers the race where Put.io is COMPLETED but
+// the local download has not been claimed yet (no DB record). It must still report downloading.
+func TestHandleTorrentGet_PutioCompleteNoLocalRecord(t *testing.T) {
+	localDir := t.TempDir()
+
+	mockClient := &mockPutioClient{
+		getTaggedTorrentsFunc: func(ctx context.Context, label string) ([]*transfer.Transfer, error) {
+			return []*transfer.Transfer{
+				{
+					ID:         "1",
+					Name:       "movie.mkv",
+					Size:       1000,
+					Downloaded: 1000,
+					Status:     "COMPLETED",
+					Files:      []*transfer.File{{ID: 1, Path: "movie.mkv", Size: 1000}},
+				},
+			}, nil
+		},
+	}
+
+	tracker := &mockLocalDownloadTracker{records: nil}
+
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "tv", "/downloads", localDir, tracker, nil)
+
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+
+	got := torrents[0]
+	require.Equal(t, StatusDownload, got.Status)
+	require.False(t, got.IsFinished)
+	require.Equal(t, int64(0), got.DownloadedEver, "no local file on disk yet")
+	require.Equal(t, int64(1000), got.LeftUntilDone)
+}
+
+// TestHandleTorrentGet_LocalDownloadComplete verifies that once the local download is marked
+// "downloaded" in the DB, the proxy reports seeding/finished so *arr can safely import.
+func TestHandleTorrentGet_LocalDownloadComplete(t *testing.T) {
+	localDir := t.TempDir()
+
+	mockClient := &mockPutioClient{
+		getTaggedTorrentsFunc: func(ctx context.Context, label string) ([]*transfer.Transfer, error) {
+			return []*transfer.Transfer{
+				{
+					ID:         "1",
+					Name:       "movie.mkv",
+					Size:       1000,
+					Downloaded: 1000,
+					Status:     "COMPLETED",
+					Files:      []*transfer.File{{ID: 1, Path: "movie.mkv", Size: 1000}},
+				},
+			}, nil
+		},
+	}
+
+	tracker := &mockLocalDownloadTracker{records: []storage.DownloadRecord{{DownloadID: "1", Status: "downloaded"}}}
+
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "tv", "/downloads", localDir, tracker, nil)
+
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+
+	got := torrents[0]
+	require.Equal(t, StatusSeed, got.Status, "local download complete must report seeding")
+	require.True(t, got.IsFinished, "local download complete must be finished")
+	require.Equal(t, int64(0), got.LeftUntilDone)
+	require.Equal(t, int64(1000), got.DownloadedEver)
+}
+
+// TestHandleTorrentGet_LocalDownloadFailed verifies failed local downloads surface an error/stopped state.
+func TestHandleTorrentGet_LocalDownloadFailed(t *testing.T) {
+	localDir := t.TempDir()
+
+	mockClient := &mockPutioClient{
+		getTaggedTorrentsFunc: func(ctx context.Context, label string) ([]*transfer.Transfer, error) {
+			return []*transfer.Transfer{
+				{
+					ID:         "1",
+					Name:       "movie.mkv",
+					Size:       1000,
+					Downloaded: 1000,
+					Status:     "COMPLETED",
+					Files:      []*transfer.File{{ID: 1, Path: "movie.mkv", Size: 1000}},
+				},
+			}, nil
+		},
+	}
+
+	tracker := &mockLocalDownloadTracker{records: []storage.DownloadRecord{{DownloadID: "1", Status: "failed"}}}
+
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "tv", "/downloads", localDir, tracker, nil)
+
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+
+	got := torrents[0]
+	require.Equal(t, StatusStopped, got.Status)
+	require.False(t, got.IsFinished)
+	require.NotNil(t, got.ErrorString)
+}
+
+// TestHandleTorrentGet_DownloadingStatusUnaffected ensures in-progress Put.io transfers
+// (still downloading on Put.io's side) report Put.io progress as before.
+func TestHandleTorrentGet_DownloadingStatusUnaffected(t *testing.T) {
+	mockClient := &mockPutioClient{
+		getTaggedTorrentsFunc: func(ctx context.Context, label string) ([]*transfer.Transfer, error) {
+			return []*transfer.Transfer{
+				{
+					ID:         "1",
+					Name:       "movie.mkv",
+					Size:       1000,
+					Downloaded: 400,
+					Status:     "DOWNLOADING",
+				},
+			}, nil
+		},
+	}
+
+	tracker := &mockLocalDownloadTracker{records: nil}
+
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "tv", "/downloads", t.TempDir(), tracker, nil)
+
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+
+	got := torrents[0]
+	require.Equal(t, StatusDownload, got.Status)
+	require.False(t, got.IsFinished)
+	require.Equal(t, int64(400), got.DownloadedEver, "in-flight Put.io transfers keep reporting Put.io progress")
+	require.Equal(t, int64(600), got.LeftUntilDone)
+}
+
+// TestHandleTorrentGet_NilTrackerFallback ensures the handler still works without a tracker,
+// falling back to Put.io status (preserving prior behavior for callers that pass nil).
+func TestHandleTorrentGet_NilTrackerFallback(t *testing.T) {
+	mockClient := &mockPutioClient{
+		getTaggedTorrentsFunc: func(ctx context.Context, label string) ([]*transfer.Transfer, error) {
+			return []*transfer.Transfer{
+				{
+					ID:         "1",
+					Name:       "movie.mkv",
+					Size:       1000,
+					Downloaded: 1000,
+					Status:     "COMPLETED",
+					Files:      []*transfer.File{{ID: 1, Path: "movie.mkv", Size: 1000}},
+				},
+			}, nil
+		},
+	}
+
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "tv", "/downloads", "", nil, nil)
+
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+
+	got := torrents[0]
+	require.Equal(t, StatusSeed, got.Status, "without a tracker, fall back to Put.io status (legacy behavior)")
+	require.True(t, got.IsFinished)
 }

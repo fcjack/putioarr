@@ -10,11 +10,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/italolelis/seedbox_downloader/internal/logctx"
+	"github.com/italolelis/seedbox_downloader/internal/storage"
 	"github.com/italolelis/seedbox_downloader/internal/telemetry"
 	"github.com/italolelis/seedbox_downloader/internal/transfer"
 	"github.com/zeebo/bencode"
@@ -116,26 +119,41 @@ func NewTransmissionConfig(downloadDir string) *TransmissionConfig {
 	}
 }
 
+// LocalDownloadTracker exposes persisted local download state for Transmission RPC.
+type LocalDownloadTracker interface {
+	GetDownloads() ([]storage.DownloadRecord, error)
+}
+
 type TransmissionHandler struct {
-	username    string
-	password    string
-	dc          DownloadClient
-	label       string
-	downloadDir string
-	telemetry   *telemetry.Telemetry
+	username         string
+	password         string
+	dc               DownloadClient
+	label            string
+	downloadDir      string
+	localDownloadDir string
+	localDownloads   LocalDownloadTracker
+	telemetry        *telemetry.Telemetry
 }
 
 // NewTransmissionHandler creates a new content handler.
 func NewTransmissionHandler(
-	username, password string, dc DownloadClient, label string, downloadDir string, t *telemetry.Telemetry,
+	username, password string,
+	dc DownloadClient,
+	label string,
+	downloadDir string,
+	localDownloadDir string,
+	localDownloads LocalDownloadTracker,
+	t *telemetry.Telemetry,
 ) *TransmissionHandler {
 	return &TransmissionHandler{
-		username:    username,
-		password:    password,
-		dc:          dc,
-		label:       label,
-		downloadDir: downloadDir,
-		telemetry:   t,
+		username:         username,
+		password:         password,
+		dc:               dc,
+		label:            label,
+		downloadDir:      downloadDir,
+		localDownloadDir: localDownloadDir,
+		localDownloads:   localDownloads,
+		telemetry:        t,
 	}
 }
 
@@ -446,6 +464,150 @@ func (h *TransmissionHandler) handleTorrentRemove(ctx context.Context, req *Tran
 	}, nil
 }
 
+func isPutioTransferComplete(status string) bool {
+	switch strings.ToLower(status) {
+	case "completed", "finished", "seeding", "seedingwait":
+		return true
+	default:
+		return false
+	}
+}
+
+func computeLocalDownloadedBytes(localDownloadDir string, t *transfer.Transfer) int64 {
+	if localDownloadDir == "" || len(t.Files) == 0 {
+		return 0
+	}
+
+	var downloaded int64
+
+	for _, file := range t.Files {
+		info, err := os.Stat(filepath.Join(localDownloadDir, file.Path))
+		if err != nil {
+			continue
+		}
+
+		size := info.Size()
+		if file.Size > 0 && size > file.Size {
+			size = file.Size
+		}
+
+		downloaded += size
+	}
+
+	return downloaded
+}
+
+func localDownloadStatusMap(records []storage.DownloadRecord) map[string]string {
+	statuses := make(map[string]string, len(records))
+	for _, record := range records {
+		statuses[record.DownloadID] = record.Status
+	}
+
+	return statuses
+}
+
+func (h *TransmissionHandler) buildTransmissionTorrent(
+	ctx context.Context,
+	transfer *transfer.Transfer,
+	localStatus string,
+	trackLocal bool,
+) (TransmissionTorrent, error) {
+	logger := logctx.LoggerFromContext(ctx)
+
+	id, err := strconv.ParseInt(transfer.ID, 10, 64)
+	if err != nil {
+		return TransmissionTorrent{}, fmt.Errorf("parse transfer ID %q: %w", transfer.ID, err)
+	}
+
+	var status TransmissionTorrentStatus
+
+	var errorString *string
+
+	downloadedEver := transfer.Downloaded
+	leftUntilDone := transfer.Size - transfer.Downloaded
+	isFinished := strings.ToLower(transfer.Status) == "completed" ||
+		strings.ToLower(transfer.Status) == "seeding" ||
+		strings.ToLower(transfer.Status) == "finished"
+
+	switch strings.ToLower(transfer.Status) {
+	case "downloading":
+		status = StatusDownload
+	case "in_queue", "waiting":
+		status = StatusDownloadWait
+	case "finishing", "checking":
+		status = StatusCheck
+	case "completed", "finished":
+		status = StatusSeed
+	case "seeding":
+		status = StatusSeed
+	case "seedingwait":
+		status = StatusSeedWait
+	case "error":
+		status = StatusStopped
+
+		if transfer.ErrorMessage != "" {
+			errorString = &transfer.ErrorMessage
+		}
+	default:
+		logger.WarnContext(ctx, "unknown put.io transfer status, defaulting to stopped",
+			"status", transfer.Status, "transfer_id", transfer.ID)
+
+		status = StatusStopped
+	}
+
+	if trackLocal && isPutioTransferComplete(transfer.Status) && localStatus != "downloaded" {
+		localDownloaded := computeLocalDownloadedBytes(h.localDownloadDir, transfer)
+
+		downloadedEver = localDownloaded
+		leftUntilDone = transfer.Size - localDownloaded
+		if leftUntilDone < 0 {
+			leftUntilDone = 0
+		}
+
+		isFinished = false
+
+		switch localStatus {
+		case "failed", "missing":
+			status = StatusStopped
+
+			msg := "local download failed"
+			if localStatus == "missing" {
+				msg = "transfer files missing from Put.io"
+			}
+
+			errorString = &msg
+		default:
+			status = StatusDownload
+		}
+	}
+
+	hashBytes := sha1.Sum([]byte(transfer.ID))
+
+	return TransmissionTorrent{
+		ID:                 id,
+		HashString:         hex.EncodeToString(hashBytes[:]),
+		Name:               transfer.Name,
+		DownloadDir:        transfer.SavePath,
+		TotalSize:          transfer.Size,
+		LeftUntilDone:      leftUntilDone,
+		IsFinished:         isFinished,
+		ETA:                transfer.EstimatedTime,
+		Status:             status,
+		ErrorString:        errorString,
+		DownloadedEver:     downloadedEver,
+		Labels:             []string{h.label},
+		PeersConnected:     transfer.PeersConnected,
+		PeersSendingToUs:   transfer.PeersSendingToUs,
+		PeersGettingFromUs: transfer.PeersGettingFromUs,
+		RateDownload:       transfer.DownloadSpeed,
+		FileCount:          uint32(len(transfer.Files)),
+		SeedRatioLimit:     1.0,
+		SeedRatioMode:      1,
+		SeedIdleLimit:      100,
+		SeedIdleMode:       1,
+	}, nil
+}
+
 func (h *TransmissionHandler) handleTorrentGet(ctx context.Context) (*TransmissionResponse, error) {
 	logger := logctx.LoggerFromContext(ctx).With("method", "handle_torrent_get")
 
@@ -459,77 +621,32 @@ func (h *TransmissionHandler) handleTorrentGet(ctx context.Context) (*Transmissi
 	torrentsCount := len(transfers)
 	logger.DebugContext(ctx, "fetched torrents from download client", "count", torrentsCount)
 
+	localStatuses := map[string]string{}
+	trackLocal := false
+
+	if h.localDownloads != nil {
+		records, err := h.localDownloads.GetDownloads()
+		if err != nil {
+			logger.WarnContext(ctx, "failed to load local download state, falling back to Put.io status only", "err", err)
+		} else {
+			localStatuses = localDownloadStatusMap(records)
+			trackLocal = true
+		}
+	}
+
 	logger.DebugContext(ctx, "converting torrents to transmission format")
 
-	transmissionTorrents := make([]TransmissionTorrent, torrentsCount)
+	transmissionTorrents := make([]TransmissionTorrent, 0, torrentsCount)
 
-	for i, transfer := range transfers {
-		// Convert string ID to int64
-		id, err := strconv.ParseInt(transfer.ID, 10, 64)
+	for _, transfer := range transfers {
+		torrent, err := h.buildTransmissionTorrent(ctx, transfer, localStatuses[transfer.ID], trackLocal)
 		if err != nil {
-			logger.ErrorContext(ctx, "failed to parse transfer ID", "id", transfer.ID, "err", err)
+			logger.ErrorContext(ctx, "failed to build transmission torrent", "transfer_id", transfer.ID, "err", err)
 
 			continue
 		}
 
-		// Map status string to TransmissionTorrentStatus
-		var status TransmissionTorrentStatus
-
-		var errorString *string
-
-		switch strings.ToLower(transfer.Status) {
-		case "downloading":
-			status = StatusDownload // 4
-		case "in_queue", "waiting":
-			status = StatusDownloadWait // 3
-		case "finishing", "checking":
-			status = StatusCheck // 2
-		case "completed", "finished":
-			status = StatusSeed // 6
-		case "seeding":
-			status = StatusSeed // 6
-		case "seedingwait":
-			status = StatusSeedWait // 5
-		case "error":
-			status = StatusStopped // 0
-
-			if transfer.ErrorMessage != "" {
-				errorString = &transfer.ErrorMessage
-			}
-		default:
-			logger.WarnContext(ctx, "unknown put.io transfer status, defaulting to stopped",
-				"status", transfer.Status, "transfer_id", transfer.ID)
-
-			status = StatusStopped // 0
-		}
-
-		hashBytes := sha1.Sum([]byte(transfer.ID))
-
-		transmissionTorrents[i] = TransmissionTorrent{
-			ID:             id,
-			HashString:     hex.EncodeToString(hashBytes[:]),
-			Name:           transfer.Name,
-			DownloadDir:    transfer.SavePath,
-			TotalSize:      transfer.Size,
-			LeftUntilDone:  transfer.Size - transfer.Downloaded,
-			IsFinished: strings.ToLower(transfer.Status) == "completed" ||
-				strings.ToLower(transfer.Status) == "seeding" ||
-				strings.ToLower(transfer.Status) == "finished",
-			ETA:            transfer.EstimatedTime,
-			Status:         status,
-			ErrorString:    errorString,
-			DownloadedEver: transfer.Downloaded,
-			Labels:         []string{h.label},
-			PeersConnected: transfer.PeersConnected,
-			PeersSendingToUs: transfer.PeersSendingToUs,
-			PeersGettingFromUs: transfer.PeersGettingFromUs,
-			RateDownload:   transfer.DownloadSpeed,
-			FileCount:      uint32(len(transfer.Files)),
-			SeedRatioLimit: 1.0,
-			SeedRatioMode:  1,
-			SeedIdleLimit:  100,
-			SeedIdleMode:   1,
-		}
+		transmissionTorrents = append(transmissionTorrents, torrent)
 	}
 
 	logger.DebugContext(ctx, "converted torrents to transmission format", "count", len(transmissionTorrents))
