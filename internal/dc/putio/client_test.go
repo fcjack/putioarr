@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -146,59 +147,38 @@ func newTestClient(serverURL string) *Client {
 	return &Client{putioClient: goputioClient}
 }
 
-func TestStripFileExtension(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"mkv file", "the_movie.mkv", "the_movie"},
-		{"mp4 file", "the_movie.mp4", "the_movie"},
-		{"avi file", "the_movie.avi", "the_movie"},
-		{"torrent file", "the_movie.torrent", "the_movie"},
-		{"nzb file", "the_movie.nzb", "the_movie"},
-		{"multiple dots", "the.movie.2024.mkv", "the.movie.2024"},
-		{"no extension", "movie", "movie"},
-		{"dot prefix no ext", ".hidden", ".hidden"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, stripFileExtension(tt.input))
-		})
-	}
-}
-
-func TestGetFilesRecursively_SingleFileExtensionStrip(t *testing.T) {
+// TestGetFilesRecursively_SingleFileRootedAtBasePath verifies that a single-file transfer is
+// placed inside a folder named after basePath (the transfer name) verbatim, regardless of the
+// Put.io file name or its extension. This is the core of the issue #5 fix: the on-disk root must
+// equal the name advertised to Sonarr/Radarr so the import path always exists.
+func TestGetFilesRecursively_SingleFileRootedAtBasePath(t *testing.T) {
 	tests := []struct {
 		name         string
+		basePath     string
 		fileName     string
 		fileType     string
 		expectedPath string
 	}{
 		{
-			name:         "mkv single file",
+			name:         "transfer name differs from file name",
+			basePath:     "The.Movie.2024.1080p.BluRay.x265-GROUP",
+			fileName:     "the.movie.short.mkv",
+			fileType:     "VIDEO",
+			expectedPath: "The.Movie.2024.1080p.BluRay.x265-GROUP/the.movie.short.mkv",
+		},
+		{
+			name:         "release name with dots is not truncated",
+			basePath:     "Dragon Ball Z (1993) (1080p BluRay x265 HEVC 10bit MLPFBA 5.1 SAMPA)",
+			fileName:     "Dragon Ball Z (1993) (1080p BluRay x265 SAMPA).mkv",
+			fileType:     "VIDEO",
+			expectedPath: "Dragon Ball Z (1993) (1080p BluRay x265 HEVC 10bit MLPFBA 5.1 SAMPA)/Dragon Ball Z (1993) (1080p BluRay x265 SAMPA).mkv",
+		},
+		{
+			name:         "transfer name equals file name without extension",
+			basePath:     "the_movie",
 			fileName:     "the_movie.mkv",
 			fileType:     "VIDEO",
 			expectedPath: "the_movie/the_movie.mkv",
-		},
-		{
-			name:         "mp4 single file",
-			fileName:     "movie.mp4",
-			fileType:     "VIDEO",
-			expectedPath: "movie/movie.mp4",
-		},
-		{
-			name:         "multiple dots mkv",
-			fileName:     "the.movie.2024.mkv",
-			fileType:     "VIDEO",
-			expectedPath: "the.movie.2024/the.movie.2024.mkv",
-		},
-		{
-			name:         "no extension",
-			fileName:     "movie",
-			fileType:     "VIDEO",
-			expectedPath: "movie/movie",
 		},
 	}
 
@@ -214,13 +194,62 @@ func TestGetFilesRecursively_SingleFileExtensionStrip(t *testing.T) {
 			defer server.Close()
 
 			client := newTestClient(server.URL)
-			files, err := client.getFilesRecursively(context.Background(), 100, tt.fileName)
+			files, err := client.getFilesRecursively(context.Background(), 100, tt.basePath)
 
 			require.NoError(t, err)
 			require.Len(t, files, 1)
 			assert.Equal(t, tt.expectedPath, files[0].Path)
 		})
 	}
+}
+
+// TestGetTaggedTorrents_FilesRootedAtTransferName reproduces issue #5: Put.io delivers a transfer
+// under a torrent-internal file name that differs from the release/transfer name. The downloaded
+// files must be rooted under the transfer name (what we advertise to Sonarr/Radarr), not the
+// Put.io file name, otherwise *arr looks for a path that never exists and import never runs.
+func TestGetTaggedTorrents_FilesRootedAtTransferName(t *testing.T) {
+	const (
+		transferName = "Dragon Ball Z (1993) (1080p BluRay x265 HEVC 10bit MLPFBA 5.1 SAMPA)"
+		putioFile    = "Dragon Ball Z (1993) (1080p BluRay x265 SAMPA).mkv"
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/transfers/list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"transfers":[{
+			"id":1,"name":%q,"file_id":100,"save_parent_id":200,
+			"status":"COMPLETED","percent_done":100,"size":1000,
+			"source":"magnet:test","downloaded":1000,
+			"peers_connected":0,"peers_getting_from_us":0,"peers_sending_to_us":0
+		}]}`, transferName)
+	})
+	mux.HandleFunc("/v2/files/", func(w http.ResponseWriter, r *http.Request) {
+		fileID := strings.TrimPrefix(r.URL.Path, "/v2/files/")
+		w.Header().Set("Content-Type", "application/json")
+
+		switch fileID {
+		case "200":
+			fmt.Fprint(w, `{"file":{"id":200,"name":"mytag","size":0,"file_type":"FOLDER","content_type":"application/x-directory"}}`)
+		case "100":
+			fmt.Fprintf(w, `{"file":{"id":100,"name":%q,"size":1000,"file_type":"VIDEO","content_type":"video/x-matroska"}}`, putioFile)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error_type":"NOT_FOUND","error_message":"not found"}`)
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := newTestClient(server.URL)
+	torrents, err := client.GetTaggedTorrents(context.Background(), "mytag")
+
+	require.NoError(t, err)
+	require.Len(t, torrents, 1)
+	assert.Equal(t, transferName, torrents[0].Name)
+	require.Len(t, torrents[0].Files, 1)
+	// The file must live under the transfer name, not the (shorter) Put.io file name.
+	assert.Equal(t, filepath.Join(transferName, putioFile), torrents[0].Files[0].Path)
 }
 
 func TestGetTaggedTorrents_SaveParentIDMatching(t *testing.T) {

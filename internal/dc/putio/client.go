@@ -111,7 +111,13 @@ func (c *Client) GetTaggedTorrents(ctx context.Context, tag string) ([]*transfer
 
 			// Populate files for completed transfers. On error, continue anyway --
 			// transfer stays visible in Activity tab, download pipeline skips via IsDownloadable().
-			files, err := c.getFilesRecursively(ctx, file.ID, file.Name)
+			//
+			// Root the file tree under the transfer name (not the Put.io file/folder name).
+			// Sonarr/Radarr learn the expected download path from the transfer name we advertise
+			// via the Transmission RPC (torrent-get). Put.io's torrent-internal folder/file name
+			// frequently differs from that release name, so using it as the on-disk root caused
+			// the *arr import to look for a path that never existed. See issue #5.
+			files, err := c.getFilesRecursively(ctx, file.ID, t.Name)
 			if err != nil {
 				logger.ErrorContext(ctx, "failed to get files for completed transfer",
 					"transfer_id", t.ID, "file_id", t.FileID, "err", err)
@@ -371,19 +377,6 @@ func (c *Client) filterMatchingTransferIds(transfers []putio.Transfer, transferI
 	return matchingTransfers
 }
 
-// stripFileExtension removes the final file extension from name.
-// For example, "the_movie.mkv" -> "the_movie", "the.movie.2024.mkv" -> "the.movie.2024".
-// If stripping would produce an empty string (e.g. dot-prefixed files like ".hidden"),
-// the original name is returned unchanged to avoid an empty folder name.
-func stripFileExtension(name string) string {
-	stripped := strings.TrimSuffix(name, filepath.Ext(name))
-	if stripped == "" {
-		return name
-	}
-
-	return stripped
-}
-
 func (c *Client) findDirectoryID(ctx context.Context, downloadDir string) (int64, error) {
 	search, err := c.putioClient.Files.Search(ctx, downloadDir, 1)
 	if err != nil {
@@ -401,6 +394,10 @@ func (c *Client) findDirectoryID(ctx context.Context, downloadDir string) (int64
 	return search.Files[0].ID, nil
 }
 
+// getFilesRecursively walks the Put.io file tree rooted at parentID and returns the flat list
+// of downloadable files. basePath is the local path prefix every returned file is rooted under;
+// the top-level caller passes the transfer name so the on-disk layout matches the path that
+// Sonarr/Radarr expect for import (see issue #5).
 func (c *Client) getFilesRecursively(ctx context.Context, parentID int64, basePath string) ([]*transfer.File, error) {
 	logger := logctx.LoggerFromContext(ctx).With("parent_id", parentID, "base_path", basePath)
 
@@ -412,10 +409,12 @@ func (c *Client) getFilesRecursively(ctx context.Context, parentID int64, basePa
 	}
 
 	if !file.IsDir() {
-		folderName := stripFileExtension(basePath)
+		// Single-file transfer: place the file inside a folder named after basePath
+		// (the transfer/release name). The folder name is used verbatim so it matches
+		// exactly what is advertised to Sonarr/Radarr, guaranteeing the import path exists.
 		result = append(result, &transfer.File{
 			ID:   file.ID,
-			Path: filepath.Join(folderName, file.Name),
+			Path: filepath.Join(basePath, file.Name),
 			Size: file.Size,
 		})
 
