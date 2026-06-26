@@ -464,12 +464,16 @@ func (h *TransmissionHandler) handleTorrentRemove(ctx context.Context, req *Tran
 	}, nil
 }
 
-func isPutioTransferComplete(status string) bool {
+// shouldGateLocalImport reports whether Put.io considers the remote transfer done enough
+// that *arr must wait for the local copy before importing.
+func shouldGateLocalImport(status string, transfer *transfer.Transfer) bool {
 	switch strings.ToLower(status) {
-	case "completed", "finished", "seeding", "seedingwait":
+	case "downloading", "in_queue", "waiting":
+		return false
+	case "completed", "finished", "seeding", "seedingwait", "completing":
 		return true
 	default:
-		return false
+		return transfer.Size > 0 && transfer.Downloaded >= transfer.Size
 	}
 }
 
@@ -533,7 +537,7 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 		status = StatusDownload
 	case "in_queue", "waiting":
 		status = StatusDownloadWait
-	case "finishing", "checking":
+	case "finishing", "checking", "completing":
 		status = StatusCheck
 	case "completed", "finished":
 		status = StatusSeed
@@ -557,7 +561,7 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 	// Gate *arr import on local disk progress whenever Put.io reports complete but the
 	// local copy is not finished. Do not depend solely on trackLocal (DB load): a broken
 	// GetDownloads scan would leave trackLocal false and Radarr/Sonarr would import partial files.
-	if isPutioTransferComplete(transfer.Status) && localStatus != "downloaded" && h.localDownloadDir != "" {
+	if shouldGateLocalImport(transfer.Status, transfer) && localStatus != "downloaded" && h.localDownloadDir != "" {
 		localDownloaded := computeLocalDownloadedBytes(h.localDownloadDir, transfer)
 		if localDownloaded > transfer.Size {
 			localDownloaded = transfer.Size

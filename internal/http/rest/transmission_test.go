@@ -594,6 +594,7 @@ func TestHandleTorrentGet_StatusMapping(t *testing.T) {
 		{"waiting", "WAITING", StatusDownloadWait, 3},
 		{"finishing", "FINISHING", StatusCheck, 2},
 		{"checking", "CHECKING", StatusCheck, 2},
+		{"completing", "COMPLETING", StatusCheck, 2},
 		{"completed", "COMPLETED", StatusSeed, 6},
 		{"finished", "FINISHED", StatusSeed, 6},
 		{"seeding", "SEEDING", StatusSeed, 6},
@@ -1025,6 +1026,41 @@ func TestHandleTorrentGet_NilTrackerFallback(t *testing.T) {
 	got := torrents[0]
 	require.Equal(t, StatusSeed, got.Status, "without a tracker, fall back to Put.io status (legacy behavior)")
 	require.True(t, got.IsFinished)
+}
+
+// TestHandleTorrentGet_CompletingStatusWaitsForLocalDownload covers Put.io's COMPLETING state:
+// remote bytes may be fully on Put.io but the local pull has not started yet.
+func TestHandleTorrentGet_CompletingStatusWaitsForLocalDownload(t *testing.T) {
+	localDir := t.TempDir()
+
+	const totalSize = int64(9_431_727_396)
+	relPath := "Inglourious.Basterds.2009.mkv"
+
+	mockClient := &mockPutioClient{
+		getTaggedTorrentsFunc: func(ctx context.Context, label string) ([]*transfer.Transfer, error) {
+			return []*transfer.Transfer{
+				{
+					ID:         "106449295",
+					Name:       relPath,
+					Size:       totalSize,
+					Downloaded: totalSize,
+					Status:     "COMPLETING",
+					Files:      []*transfer.File{{ID: 1, Path: relPath, Size: totalSize}},
+				},
+			}, nil
+		},
+	}
+
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "jac", "/jac", localDir, nil, nil)
+
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+
+	got := torrents[0]
+	require.Equal(t, StatusDownload, got.Status, "COMPLETING must not surface as stopped/complete to *arr")
+	require.False(t, got.IsFinished)
+	require.Equal(t, int64(0), got.DownloadedEver)
+	require.Equal(t, totalSize, got.LeftUntilDone)
 }
 
 // TestHandleTorrentGet_DBLoadFailedStillChecksDisk verifies that a broken GetDownloads does not
