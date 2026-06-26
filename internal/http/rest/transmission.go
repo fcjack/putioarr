@@ -510,7 +510,6 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 	ctx context.Context,
 	transfer *transfer.Transfer,
 	localStatus string,
-	trackLocal bool,
 ) (TransmissionTorrent, error) {
 	logger := logctx.LoggerFromContext(ctx)
 
@@ -555,7 +554,10 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 		status = StatusStopped
 	}
 
-	if trackLocal && isPutioTransferComplete(transfer.Status) && localStatus != "downloaded" {
+	// Gate *arr import on local disk progress whenever Put.io reports complete but the
+	// local copy is not finished. Do not depend solely on trackLocal (DB load): a broken
+	// GetDownloads scan would leave trackLocal false and Radarr/Sonarr would import partial files.
+	if isPutioTransferComplete(transfer.Status) && localStatus != "downloaded" && h.localDownloadDir != "" {
 		localDownloaded := computeLocalDownloadedBytes(h.localDownloadDir, transfer)
 		if localDownloaded > transfer.Size {
 			localDownloaded = transfer.Size
@@ -621,15 +623,13 @@ func (h *TransmissionHandler) handleTorrentGet(ctx context.Context) (*Transmissi
 	logger.DebugContext(ctx, "fetched torrents from download client", "count", torrentsCount)
 
 	localStatuses := map[string]string{}
-	trackLocal := false
 
 	if h.localDownloads != nil {
 		records, err := h.localDownloads.GetDownloads()
 		if err != nil {
-			logger.WarnContext(ctx, "failed to load local download state, falling back to Put.io status only", "err", err)
+			logger.WarnContext(ctx, "failed to load local download state, using disk progress only", "err", err)
 		} else {
 			localStatuses = localDownloadStatusMap(records)
-			trackLocal = true
 		}
 	}
 
@@ -638,7 +638,7 @@ func (h *TransmissionHandler) handleTorrentGet(ctx context.Context) (*Transmissi
 	transmissionTorrents := make([]TransmissionTorrent, 0, torrentsCount)
 
 	for _, transfer := range transfers {
-		torrent, err := h.buildTransmissionTorrent(ctx, transfer, localStatuses[transfer.ID], trackLocal)
+		torrent, err := h.buildTransmissionTorrent(ctx, transfer, localStatuses[transfer.ID])
 		if err != nil {
 			logger.ErrorContext(ctx, "failed to build transmission torrent", "transfer_id", transfer.ID, "err", err)
 

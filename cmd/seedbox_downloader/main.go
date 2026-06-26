@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -22,10 +23,9 @@ import (
 	"github.com/italolelis/seedbox_downloader/internal/svc/arr"
 	"github.com/italolelis/seedbox_downloader/internal/telemetry"
 	"github.com/italolelis/seedbox_downloader/internal/transfer"
+	"github.com/italolelis/seedbox_downloader/internal/version"
 	"github.com/kelseyhightower/envconfig"
 )
-
-var version = "develop"
 
 // Config struct for environment variables.
 type config struct {
@@ -82,6 +82,14 @@ type arrConfig struct {
 }
 
 func main() {
+	showVersion := flag.Bool("version", false, "print version information and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.Info())
+		os.Exit(0)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -100,9 +108,11 @@ func run(ctx context.Context) error {
 	ctx = logctx.WithLogger(ctx, logger)
 	logger = logger.WithGroup("main")
 
+	logger.InfoContext(ctx, "starting putioarr", "version", version.String(), "build", version.Info())
+
 	// Log configuration loaded with safe values (no secrets)
 	logger.InfoContext(ctx, "configuration loaded",
-		"version", version,
+		"version", version.Version,
 		"log_level", cfg.LogLevel,
 		"target_label", cfg.TargetLabel,
 		"download_dir", cfg.DownloadDir,
@@ -152,7 +162,7 @@ func run(ctx context.Context) error {
 	logger.InfoContext(ctx, "service ready",
 		"bind_address", cfg.Web.BindAddress,
 		"target_label", cfg.TargetLabel,
-		"version", version,
+		"version", version.String(),
 	)
 
 	return runMainLoop(ctx, cfg, servers)
@@ -204,7 +214,7 @@ func initializeConfig() (*config, *slog.Logger, error) {
 func initializeTelemetry(ctx context.Context, cfg *config) (*telemetry.Telemetry, error) {
 	tel, err := telemetry.New(ctx, telemetry.Config{
 		ServiceName:    cfg.Telemetry.ServiceName,
-		ServiceVersion: version,
+		ServiceVersion: version.Version,
 		OTELAddress:    cfg.Telemetry.OTELAddress,
 	})
 	if err != nil {

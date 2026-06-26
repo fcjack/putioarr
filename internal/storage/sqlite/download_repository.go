@@ -29,7 +29,7 @@ func (r *DownloadRepository) GetDownloads() ([]storage.DownloadRecord, error) {
 
 		var lockedBy sql.NullString
 
-		err := rows.Scan(&record.DownloadID, &record.FilePath, &record.DownloadedAt, &record.Status, &lockedBy)
+		err := rows.Scan(&record.DownloadID, &record.DownloadedAt, &record.Status, &lockedBy)
 		if err != nil {
 			return nil, err
 		}

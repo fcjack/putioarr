@@ -1026,3 +1026,43 @@ func TestHandleTorrentGet_NilTrackerFallback(t *testing.T) {
 	require.Equal(t, StatusSeed, got.Status, "without a tracker, fall back to Put.io status (legacy behavior)")
 	require.True(t, got.IsFinished)
 }
+
+// TestHandleTorrentGet_DBLoadFailedStillChecksDisk verifies that a broken GetDownloads does not
+// bypass the local-file gate: partial on-disk progress must still report as downloading.
+func TestHandleTorrentGet_DBLoadFailedStillChecksDisk(t *testing.T) {
+	localDir := t.TempDir()
+
+	const partialSize = int64(600_000_000)
+	const totalSize = int64(20_000_000_000)
+	relPath := "Big.Movie.2024.mkv"
+	require.NoError(t, os.WriteFile(filepath.Join(localDir, relPath), make([]byte, 1024), 0o644))
+	require.NoError(t, os.Truncate(filepath.Join(localDir, relPath), partialSize))
+
+	mockClient := &mockPutioClient{
+		getTaggedTorrentsFunc: func(ctx context.Context, label string) ([]*transfer.Transfer, error) {
+			return []*transfer.Transfer{
+				{
+					ID:         "1",
+					Name:       relPath,
+					Size:       totalSize,
+					Downloaded: totalSize,
+					Status:     "COMPLETED",
+					Files:      []*transfer.File{{ID: 1, Path: relPath, Size: totalSize}},
+				},
+			}, nil
+		},
+	}
+
+	tracker := &mockLocalDownloadTracker{err: errors.New("scan mismatch")}
+
+	handler := NewTransmissionHandler("testuser", "testpass", mockClient, "jac", "/jac", localDir, tracker, nil)
+
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+
+	got := torrents[0]
+	require.Equal(t, StatusDownload, got.Status)
+	require.False(t, got.IsFinished)
+	require.Equal(t, partialSize, got.DownloadedEver)
+	require.Equal(t, totalSize-partialSize, got.LeftUntilDone)
+}
