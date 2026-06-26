@@ -8,8 +8,6 @@ import (
 )
 
 func TestString(t *testing.T) {
-	t.Parallel()
-
 	origVersion, origCommit := Version, Commit
 	t.Cleanup(func() {
 		Version, Commit = origVersion, origCommit
@@ -24,8 +22,6 @@ func TestString(t *testing.T) {
 }
 
 func TestInfo(t *testing.T) {
-	t.Parallel()
-
 	origVersion, origCommit, origBuildTime := Version, Commit, BuildTime
 	t.Cleanup(func() {
 		Version, Commit, BuildTime = origVersion, origCommit, origBuildTime
