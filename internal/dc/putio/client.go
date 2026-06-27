@@ -112,11 +112,9 @@ func (c *Client) GetTaggedTorrents(ctx context.Context, tag string) ([]*transfer
 			// Populate files for completed transfers. On error, continue anyway --
 			// transfer stays visible in Activity tab, download pipeline skips via IsDownloadable().
 			//
-			// Root the file tree under the transfer name (not the Put.io file/folder name).
-			// Sonarr/Radarr learn the expected download path from the transfer name we advertise
-			// via the Transmission RPC (torrent-get). Put.io's torrent-internal folder/file name
-			// frequently differs from that release name, so using it as the on-disk root caused
-			// the *arr import to look for a path that never existed. See issue #5.
+			// Build local paths from the transfer name advertised via Transmission RPC (torrent-get).
+			// Single-file transfers are flat files under DOWNLOAD_DIR; multi-file transfers use a
+			// folder named after the transfer. See issue #2.
 			files, err := c.getFilesRecursively(ctx, file.ID, t.Name)
 			if err != nil {
 				logger.ErrorContext(ctx, "failed to get files for completed transfer",
@@ -395,9 +393,8 @@ func (c *Client) findDirectoryID(ctx context.Context, downloadDir string) (int64
 }
 
 // getFilesRecursively walks the Put.io file tree rooted at parentID and returns the flat list
-// of downloadable files. basePath is the local path prefix every returned file is rooted under;
-// the top-level caller passes the transfer name so the on-disk layout matches the path that
-// Sonarr/Radarr expect for import (see issue #5).
+// of downloadable files. basePath is the transfer name from Transmission RPC; single-file
+// transfers map to a flat file at basePath, multi-file transfers map under basePath/ (issue #2).
 func (c *Client) getFilesRecursively(ctx context.Context, parentID int64, basePath string) ([]*transfer.File, error) {
 	logger := logctx.LoggerFromContext(ctx).With("parent_id", parentID, "base_path", basePath)
 
@@ -409,12 +406,10 @@ func (c *Client) getFilesRecursively(ctx context.Context, parentID int64, basePa
 	}
 
 	if !file.IsDir() {
-		// Single-file transfer: place the file inside a folder named after basePath
-		// (the transfer/release name). The folder name is used verbatim so it matches
-		// exactly what is advertised to Sonarr/Radarr, guaranteeing the import path exists.
+		// Single-file transfer: write flat at basePath (the torrent name *arr resolves).
 		result = append(result, &transfer.File{
 			ID:   file.ID,
-			Path: filepath.Join(basePath, file.Name),
+			Path: basePath,
 			Size: file.Size,
 		})
 

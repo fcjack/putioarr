@@ -147,11 +147,10 @@ func newTestClient(serverURL string) *Client {
 	return &Client{putioClient: goputioClient}
 }
 
-// TestGetFilesRecursively_SingleFileRootedAtBasePath verifies that a single-file transfer is
-// placed inside a folder named after basePath (the transfer name) verbatim, regardless of the
-// Put.io file name or its extension. This is the core of the issue #5 fix: the on-disk root must
-// equal the name advertised to Sonarr/Radarr so the import path always exists.
-func TestGetFilesRecursively_SingleFileRootedAtBasePath(t *testing.T) {
+// TestGetFilesRecursively_SingleFileFlatPath verifies that a single-file transfer maps to a
+// flat file at basePath (the transfer/torrent name), matching real Transmission layout and
+// what Sonarr/Radarr resolve from torrent-get Name + downloadDir (issue #2).
+func TestGetFilesRecursively_SingleFileFlatPath(t *testing.T) {
 	tests := []struct {
 		name         string
 		basePath     string
@@ -160,25 +159,25 @@ func TestGetFilesRecursively_SingleFileRootedAtBasePath(t *testing.T) {
 		expectedPath string
 	}{
 		{
-			name:         "transfer name differs from file name",
+			name:         "single episode mkv at transfer root",
+			basePath:     "ExampleShow.S02E05.The.Final.Chapter.2160p.WEB-DL.DDP5.1.H.265-GROUP.mkv",
+			fileName:     "ExampleShow.S02E05.The.Final.Chapter.2160p.WEB-DL.DDP5.1.H.265-GROUP.mkv",
+			fileType:     "VIDEO",
+			expectedPath: "ExampleShow.S02E05.The.Final.Chapter.2160p.WEB-DL.DDP5.1.H.265-GROUP.mkv",
+		},
+		{
+			name:         "transfer name differs from Put.io file name",
 			basePath:     "The.Movie.2024.1080p.BluRay.x265-GROUP",
 			fileName:     "the.movie.short.mkv",
 			fileType:     "VIDEO",
-			expectedPath: "The.Movie.2024.1080p.BluRay.x265-GROUP/the.movie.short.mkv",
+			expectedPath: "The.Movie.2024.1080p.BluRay.x265-GROUP",
 		},
 		{
 			name:         "release name with dots is not truncated",
 			basePath:     "Dragon Ball Z (1993) (1080p BluRay x265 HEVC 10bit MLPFBA 5.1 SAMPA)",
 			fileName:     "Dragon Ball Z (1993) (1080p BluRay x265 SAMPA).mkv",
 			fileType:     "VIDEO",
-			expectedPath: "Dragon Ball Z (1993) (1080p BluRay x265 HEVC 10bit MLPFBA 5.1 SAMPA)/Dragon Ball Z (1993) (1080p BluRay x265 SAMPA).mkv",
-		},
-		{
-			name:         "transfer name equals file name without extension",
-			basePath:     "the_movie",
-			fileName:     "the_movie.mkv",
-			fileType:     "VIDEO",
-			expectedPath: "the_movie/the_movie.mkv",
+			expectedPath: "Dragon Ball Z (1993) (1080p BluRay x265 HEVC 10bit MLPFBA 5.1 SAMPA)",
 		},
 	}
 
@@ -203,11 +202,9 @@ func TestGetFilesRecursively_SingleFileRootedAtBasePath(t *testing.T) {
 	}
 }
 
-// TestGetTaggedTorrents_FilesRootedAtTransferName reproduces issue #5: Put.io delivers a transfer
-// under a torrent-internal file name that differs from the release/transfer name. The downloaded
-// files must be rooted under the transfer name (what we advertise to Sonarr/Radarr), not the
-// Put.io file name, otherwise *arr looks for a path that never exists and import never runs.
-func TestGetTaggedTorrents_FilesRootedAtTransferName(t *testing.T) {
+// TestGetTaggedTorrents_SingleFileUsesTransferName verifies single-file transfers use the
+// transfer name as the flat local path so *arr can import from the path torrent-get advertises.
+func TestGetTaggedTorrents_SingleFileUsesTransferName(t *testing.T) {
 	const (
 		transferName = "Dragon Ball Z (1993) (1080p BluRay x265 HEVC 10bit MLPFBA 5.1 SAMPA)"
 		putioFile    = "Dragon Ball Z (1993) (1080p BluRay x265 SAMPA).mkv"
@@ -248,8 +245,40 @@ func TestGetTaggedTorrents_FilesRootedAtTransferName(t *testing.T) {
 	require.Len(t, torrents, 1)
 	assert.Equal(t, transferName, torrents[0].Name)
 	require.Len(t, torrents[0].Files, 1)
-	// The file must live under the transfer name, not the (shorter) Put.io file name.
-	assert.Equal(t, filepath.Join(transferName, putioFile), torrents[0].Files[0].Path)
+	assert.Equal(t, transferName, torrents[0].Files[0].Path)
+}
+
+// TestGetFilesRecursively_MultiFileFolder preserves folder structure for season packs.
+func TestGetFilesRecursively_MultiFileFolder(t *testing.T) {
+	const folderName = "Show.S01.1080p.WEB-DL"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/files/100", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"file":{"id":100,"name":"Show.S01.1080p.WEB-DL","size":0,"file_type":"FOLDER","content_type":"application/x-directory"}}`)
+	})
+	mux.HandleFunc("/v2/files/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("parent_id") != "100" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"files":[
+			{"id":101,"name":"Show.S01E01.mkv","size":1000,"file_type":"VIDEO","content_type":"video/x-matroska"},
+			{"id":102,"name":"Show.S01E02.mkv","size":1000,"file_type":"VIDEO","content_type":"video/x-matroska"}
+		],"parent":{"id":100,"name":"Show.S01.1080p.WEB-DL","file_type":"FOLDER"}}`)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := newTestClient(server.URL)
+	files, err := client.getFilesRecursively(context.Background(), 100, folderName)
+
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+	assert.Equal(t, filepath.Join(folderName, "Show.S01E01.mkv"), files[0].Path)
+	assert.Equal(t, filepath.Join(folderName, "Show.S01E02.mkv"), files[1].Path)
 }
 
 func TestGetTaggedTorrents_SaveParentIDMatching(t *testing.T) {
