@@ -91,6 +91,45 @@ func (o *TransferOrchestrator) Close() {
 	close(o.OnTransferImported)
 }
 
+// Requeue re-enqueues a single transfer for local download without waiting for the
+// next polling tick. The transfer must be available and downloadable on Put.io and
+// claimable in SQLite (status pending/failed). Callers that reset a row to retry it
+// should set its status to "pending" before calling Requeue.
+func (o *TransferOrchestrator) Requeue(ctx context.Context, transferID string) error {
+	transfers, err := o.dc.GetTaggedTorrents(ctx, o.label)
+	if err != nil {
+		return fmt.Errorf("failed to get tagged torrents: %w", err)
+	}
+
+	for _, t := range transfers {
+		if t.ID != transferID {
+			continue
+		}
+
+		if !t.IsAvailable() || !t.IsDownloadable() {
+			return fmt.Errorf("transfer %s is not available for download", transferID)
+		}
+
+		claimed, err := o.repo.ClaimTransfer(transferID)
+		if err != nil && err != storage.ErrDownloaded {
+			return fmt.Errorf("failed to claim transfer: %w", err)
+		}
+
+		if !claimed {
+			return fmt.Errorf("transfer %s could not be claimed for requeue", transferID)
+		}
+
+		select {
+		case o.OnDownloadQueued <- t:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return fmt.Errorf("transfer %s not found on Put.io", transferID)
+}
+
 func (o *TransferOrchestrator) ProduceTransfers(ctx context.Context) {
 	logger := logctx.LoggerFromContext(ctx)
 

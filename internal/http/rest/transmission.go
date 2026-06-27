@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -477,28 +475,11 @@ func shouldGateLocalImport(status string, transfer *transfer.Transfer) bool {
 	}
 }
 
-func computeLocalDownloadedBytes(localDownloadDir string, t *transfer.Transfer) int64 {
-	if localDownloadDir == "" || len(t.Files) == 0 {
-		return 0
-	}
-
-	var downloaded int64
-
-	for _, file := range t.Files {
-		info, err := os.Stat(filepath.Join(localDownloadDir, file.Path))
-		if err != nil {
-			continue
-		}
-
-		size := info.Size()
-		if file.Size > 0 && size > file.Size {
-			size = file.Size
-		}
-
-		downloaded += size
-	}
-
-	return downloaded
+// computeLocalDownloadedBytes delegates to transfer.LocalDownloadedBytes. It exists as a
+// thin local wrapper because buildTransmissionTorrent shadows the transfer package name
+// with a parameter, preventing a direct package-qualified call there.
+func computeLocalDownloadedBytes(downloadDir string, t *transfer.Transfer) int64 {
+	return transfer.LocalDownloadedBytes(downloadDir, t)
 }
 
 func localDownloadStatusMap(records []storage.DownloadRecord) map[string]string {

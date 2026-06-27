@@ -41,6 +41,25 @@ func (r *InstrumentedDownloadRepository) GetDownloads() ([]storage.DownloadRecor
 	return result, nil
 }
 
+// GetByTransferID retrieves a single download record with telemetry.
+func (r *InstrumentedDownloadRepository) GetByTransferID(transferID string) (storage.DownloadRecord, error) {
+	var result storage.DownloadRecord
+
+	var err error
+
+	instrumentedErr := r.telemetry.InstrumentDBOperation(context.Background(), "get_by_transfer_id", func(ctx context.Context) error {
+		result, err = r.repo.GetByTransferID(transferID)
+
+		return err
+	})
+
+	if instrumentedErr != nil {
+		return storage.DownloadRecord{}, instrumentedErr
+	}
+
+	return result, nil
+}
+
 // ClaimTransfer claims a transfer with telemetry.
 func (r *InstrumentedDownloadRepository) ClaimTransfer(transferID string) (bool, error) {
 	var result bool
@@ -64,5 +83,19 @@ func (r *InstrumentedDownloadRepository) ClaimTransfer(transferID string) (bool,
 func (r *InstrumentedDownloadRepository) UpdateTransferStatus(transferID, status string) error {
 	return r.telemetry.InstrumentDBOperation(context.Background(), "update_transfer_status", func(ctx context.Context) error {
 		return r.repo.UpdateTransferStatus(transferID, status)
+	})
+}
+
+// DeleteByTransferID removes a single download record with telemetry.
+func (r *InstrumentedDownloadRepository) DeleteByTransferID(transferID string) error {
+	return r.telemetry.InstrumentDBOperation(context.Background(), "delete_by_transfer_id", func(ctx context.Context) error {
+		return r.repo.DeleteByTransferID(transferID)
+	})
+}
+
+// ResetDownloads wipes the downloads table with telemetry.
+func (r *InstrumentedDownloadRepository) ResetDownloads() error {
+	return r.telemetry.InstrumentDBOperation(context.Background(), "reset_downloads", func(ctx context.Context) error {
+		return r.repo.ResetDownloads()
 	})
 }

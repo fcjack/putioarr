@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,9 @@ type Downloader struct {
 	arrServices []*arr.Client
 	maxParallel int
 
+	// activeDownloads maps an in-flight transfer ID to its cancel func so the UI can cancel it.
+	activeDownloads sync.Map
+
 	OnFileDownloadError        chan *transfer.File
 	OnTransferDownloadError    chan *transfer.Transfer
 	OnTransferDownloadFinished chan *transfer.Transfer
@@ -71,6 +75,25 @@ func NewDownloader(
 	}
 }
 
+// CancelDownload cancels an in-flight local download for the given transfer ID.
+// It returns true if a matching active download was found and signalled. The byte
+// copy aborts at the next read chunk; the transfer is then reported as a download error.
+func (d *Downloader) CancelDownload(transferID string) bool {
+	value, ok := d.activeDownloads.Load(transferID)
+	if !ok {
+		return false
+	}
+
+	cancel, ok := value.(context.CancelFunc)
+	if !ok {
+		return false
+	}
+
+	cancel()
+
+	return true
+}
+
 func (d *Downloader) Close() {
 	close(d.OnFileDownloadError)
 	close(d.OnTransferDownloadError)
@@ -95,8 +118,22 @@ func (d *Downloader) WatchDownloads(ctx context.Context, incomingTransfers <-cha
 			case transfer := <-incomingTransfers:
 				logger.DebugContext(ctx, "downloading transfer", "transfer_id", transfer.ID, "transfer_name", transfer.Name)
 
-				downloadedFiles, err := d.DownloadTransfer(ctx, transfer)
+				dlCtx, cancel := context.WithCancel(ctx)
+				d.activeDownloads.Store(transfer.ID, cancel)
+
+				downloadedFiles, err := d.DownloadTransfer(dlCtx, transfer)
+
+				d.activeDownloads.Delete(transfer.ID)
+				cancel()
+
 				if err != nil {
+					if errors.Is(err, context.Canceled) {
+						logger.WarnContext(ctx, "transfer download cancelled", "transfer_id", transfer.ID, "transfer_name", transfer.Name)
+						d.OnTransferDownloadError <- transfer
+
+						continue
+					}
+
 					if errors.Is(err, putio.ErrTransferNotFound) {
 						logger.WarnContext(ctx, "transfer removed from Put.io", "transfer_id", transfer.ID, "transfer_name", transfer.Name)
 						d.OnTransferMissing <- MissingTransferEvent{Transfer: transfer, MissingType: "transfer_removed"}
@@ -442,11 +479,26 @@ func (d *Downloader) writeFile(ctx context.Context, out *os.File, reader io.Read
 			logger.DebugContext(ctx, "download progress", "url", url, "downloaded", humanize.Bytes(uint64(written)))
 		}
 	}
-	pr := progress.NewReader(reader, totalBytes, progressInterval, progressCb)
+	pr := progress.NewReader(&contextReader{ctx: ctx, reader: reader}, totalBytes, progressInterval, progressCb)
 
 	if _, err := io.Copy(out, pr); err != nil {
 		return fmt.Errorf("failed to copy file: %w", err)
 	}
 
 	return nil
+}
+
+// contextReader aborts a read as soon as the context is cancelled so an in-flight
+// download stops promptly when CancelDownload is called.
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (c *contextReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	return c.reader.Read(p)
 }
