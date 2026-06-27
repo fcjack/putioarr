@@ -8,17 +8,34 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/italolelis/seedbox_downloader/internal/logctx"
 	"github.com/italolelis/seedbox_downloader/internal/svc/transfers"
+	"github.com/italolelis/seedbox_downloader/internal/version"
 )
+
+// ConfigSnapshot is the non-secret configuration exposed to the Web UI.
+type ConfigSnapshot struct {
+	Version           string  `json:"version"`
+	DownloadDir       string  `json:"downloadDir"`
+	TargetLabel       string  `json:"targetLabel"`
+	MaxParallel       int     `json:"maxParallel"`
+	PollingInterval   string  `json:"pollingInterval"`
+	CleanupInterval   string  `json:"cleanupInterval"`
+	KeepDownloadedFor string  `json:"keepDownloadedFor"`
+	DownloadClient    string  `json:"downloadClient"`
+	PutioSeedRatio    float64 `json:"putioSeedRatio"`
+	SonarrConfigured  bool    `json:"sonarrConfigured"`
+	RadarrConfigured  bool    `json:"radarrConfigured"`
+}
 
 // UIHandler exposes the JSON REST API consumed by the putioarr Web UI. It is mounted
 // on a dedicated port, separate from the Transmission RPC used by Sonarr/Radarr.
 type UIHandler struct {
-	svc *transfers.Service
+	svc    *transfers.Service
+	config ConfigSnapshot
 }
 
 // NewUIHandler creates a new Web UI API handler.
-func NewUIHandler(svc *transfers.Service) *UIHandler {
-	return &UIHandler{svc: svc}
+func NewUIHandler(svc *transfers.Service, config ConfigSnapshot) *UIHandler {
+	return &UIHandler{svc: svc, config: config}
 }
 
 // Routes returns the API router for the Web UI.
@@ -26,14 +43,51 @@ func (h *UIHandler) Routes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Get("/health", h.handleHealth)
+		r.Get("/config", h.handleConfig)
+
 		r.Get("/transfers", h.handleListTransfers)
 		r.Get("/transfers/{id}", h.handleGetTransfer)
 		r.Post("/transfers/{id}/retry", h.handleRetryTransfer)
 		r.Post("/transfers/{id}/cancel", h.handleCancelTransfer)
 		r.Delete("/transfers/{id}", h.handleDeleteTransfer)
+
+		r.Post("/admin/db/reset", h.handleResetDB)
+		r.Post("/admin/downloads/purge", h.handlePurgeDownloads)
 	})
 
 	return r
+}
+
+func (h *UIHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, r, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"version": version.String(),
+	})
+}
+
+func (h *UIHandler) handleConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, r, http.StatusOK, h.config)
+}
+
+func (h *UIHandler) handleResetDB(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.ResetDB(r.Context()); err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]string{"status": "database reset"})
+}
+
+func (h *UIHandler) handlePurgeDownloads(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.PurgeDownloads(r.Context()); err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]string{"status": "download directory purged"})
 }
 
 func (h *UIHandler) handleListTransfers(w http.ResponseWriter, r *http.Request) {
