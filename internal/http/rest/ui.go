@@ -28,6 +28,9 @@ func (h *UIHandler) Routes() http.Handler {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/transfers", h.handleListTransfers)
 		r.Get("/transfers/{id}", h.handleGetTransfer)
+		r.Post("/transfers/{id}/retry", h.handleRetryTransfer)
+		r.Post("/transfers/{id}/cancel", h.handleCancelTransfer)
+		r.Delete("/transfers/{id}", h.handleDeleteTransfer)
 	})
 
 	return r
@@ -70,6 +73,66 @@ func (h *UIHandler) handleGetTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, r, http.StatusOK, detail)
+}
+
+func (h *UIHandler) handleRetryTransfer(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	if err := h.svc.Retry(r.Context(), id); err != nil {
+		writeError(w, r, http.StatusBadGateway, err)
+
+		return
+	}
+
+	writeJSON(w, r, http.StatusAccepted, map[string]string{"status": "requeued", "id": id})
+}
+
+func (h *UIHandler) handleCancelTransfer(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	if err := h.svc.Cancel(r.Context(), id); err != nil {
+		if errors.Is(err, transfers.ErrNoActiveDownload) {
+			writeError(w, r, http.StatusConflict, err)
+
+			return
+		}
+
+		writeError(w, r, http.StatusBadGateway, err)
+
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]string{"status": "cancelled", "id": id})
+}
+
+func (h *UIHandler) handleDeleteTransfer(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	q := r.URL.Query()
+	all := q.Has("all")
+
+	scopes := transfers.DeleteScopes{
+		Putio: all || q.Has("putio"),
+		Local: all || q.Has("local"),
+		DB:    all || q.Has("db"),
+	}
+
+	if !scopes.Any() {
+		writeError(w, r, http.StatusBadRequest, errors.New("at least one delete scope required: putio, local, db, or all"))
+
+		return
+	}
+
+	if err := h.svc.Delete(r.Context(), id, scopes); err != nil {
+		writeError(w, r, http.StatusBadGateway, err)
+
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]interface{}{
+		"status": "deleted",
+		"id":     id,
+		"scopes": map[string]bool{"putio": scopes.Putio, "local": scopes.Local, "db": scopes.DB},
+	})
 }
 
 // writeJSON writes a JSON response with the given status code.

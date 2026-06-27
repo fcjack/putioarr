@@ -72,12 +72,15 @@ func (m *mockRequeuer) Requeue(_ context.Context, id string) error {
 	return nil
 }
 
-type mockCanceller struct{ cancelled []string }
+type mockCanceller struct {
+	cancelled []string
+	fail      bool
+}
 
 func (m *mockCanceller) CancelDownload(id string) bool {
 	m.cancelled = append(m.cancelled, id)
 
-	return true
+	return !m.fail
 }
 
 type mockPutioRemover struct {
