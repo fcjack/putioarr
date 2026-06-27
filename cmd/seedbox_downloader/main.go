@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/italolelis/seedbox_downloader/internal/storage"
 	"github.com/italolelis/seedbox_downloader/internal/storage/sqlite"
 	"github.com/italolelis/seedbox_downloader/internal/svc/arr"
+	"github.com/italolelis/seedbox_downloader/internal/svc/transfers"
 	"github.com/italolelis/seedbox_downloader/internal/telemetry"
 	"github.com/italolelis/seedbox_downloader/internal/transfer"
 	"github.com/italolelis/seedbox_downloader/internal/version"
@@ -64,6 +66,15 @@ type config struct {
 		WriteTimeout    time.Duration `split_words:"true" default:"30s"`
 		IdleTimeout     time.Duration `split_words:"true" default:"5s"`
 		ShutdownTimeout time.Duration `split_words:"true" default:"30s"`
+	}
+
+	// UI configures the human-facing Web UI/API server, served on a dedicated port
+	// separate from the Transmission RPC consumed by Sonarr/Radarr.
+	UI struct {
+		Enabled     bool   `split_words:"true" default:"true"`
+		BindAddress string `split_words:"true" default:"0.0.0.0:9092"`
+		Username    string `split_words:"true"`
+		Password    string `split_words:"true"`
 	}
 
 	Telemetry struct {
@@ -152,7 +163,7 @@ func run(ctx context.Context) error {
 
 	logger.InfoContext(ctx, "starting HTTP server")
 
-	servers, err := startServers(ctx, cfg, tel, services.localDownloads)
+	servers, err := startServers(ctx, cfg, tel, services)
 	if err != nil {
 		return err
 	}
@@ -172,6 +183,7 @@ type services struct {
 	downloader           *downloader.Downloader
 	transferOrchestrator *transfer.TransferOrchestrator
 	localDownloads       storage.DownloadRepository
+	uiService            *transfers.Service
 }
 
 func (s *services) Close() {
@@ -192,6 +204,7 @@ func (s *services) Close() {
 
 type servers struct {
 	api     *http.Server
+	ui      *http.Server
 	metrics *http.Server
 	errors  chan error
 }
@@ -301,21 +314,32 @@ func initializeServices(ctx context.Context, cfg *config, tel *telemetry.Telemet
 	transferOrchestrator.ProduceTransfers(ctx)
 	downloader.WatchDownloads(ctx, transferOrchestrator.OnDownloadQueued)
 
+	uiService := transfers.NewService(
+		instrumentedDC,
+		dr,
+		transferOrchestrator,
+		downloader,
+		instrumentedTC,
+		cfg.TargetLabel,
+		cfg.DownloadDir,
+	)
+
 	return &services{
 		downloader:           downloader,
 		transferOrchestrator: transferOrchestrator,
 		localDownloads:       dr,
+		uiService:            uiService,
 	}, nil
 }
 
 func startServers(
-	ctx context.Context, cfg *config, tel *telemetry.Telemetry, localDownloads rest.LocalDownloadTracker,
+	ctx context.Context, cfg *config, tel *telemetry.Telemetry, svcs *services,
 ) (*servers, error) {
 	logger := logctx.LoggerFromContext(ctx)
 
-	serverErrors := make(chan error, 1)
+	serverErrors := make(chan error, 2)
 
-	server, err := setupServer(ctx, cfg, tel, localDownloads)
+	server, err := setupServer(ctx, cfg, tel, svcs.localDownloads)
 	if err != nil {
 		logger.ErrorContext(ctx, "server setup failed",
 			"component", "http_server",
@@ -326,14 +350,35 @@ func startServers(
 	}
 
 	go func() {
-		logger.InfoContext(ctx, "initializing API support", "host", cfg.Web.BindAddress)
+		logger.InfoContext(ctx, "initializing Transmission RPC support", "host", cfg.Web.BindAddress)
 		serverErrors <- server.ListenAndServe()
 	}()
 
-	return &servers{
+	result := &servers{
 		api:    server,
 		errors: serverErrors,
-	}, nil
+	}
+
+	if cfg.UI.Enabled {
+		uiServer, err := setupUIServer(ctx, cfg, tel, svcs.uiService)
+		if err != nil {
+			logger.ErrorContext(ctx, "ui server setup failed",
+				"component", "ui_server",
+				"bind_address", cfg.UI.BindAddress,
+				"err", err)
+
+			return nil, fmt.Errorf("failed to setup ui server: %w", err)
+		}
+
+		result.ui = uiServer
+
+		go func() {
+			logger.InfoContext(ctx, "initializing Web UI support", "host", cfg.UI.BindAddress)
+			serverErrors <- uiServer.ListenAndServe()
+		}()
+	}
+
+	return result, nil
 }
 
 func runMainLoop(ctx context.Context, cfg *config, servers *servers) error {
@@ -361,7 +406,18 @@ func runMainLoop(ctx context.Context, cfg *config, servers *servers) error {
 				logger.InfoContext(shutdownCtx, "metrics server stopped")
 			}
 
-			// Phase 2: Stop HTTP server
+			// Phase 2: Stop Web UI server (if present)
+			if servers.ui != nil {
+				logger.InfoContext(shutdownCtx, "stopping Web UI server")
+
+				if err := servers.ui.Shutdown(shutdownCtx); err != nil {
+					logger.ErrorContext(shutdownCtx, "failed to gracefully shutdown Web UI server", "err", err)
+				}
+
+				logger.InfoContext(shutdownCtx, "Web UI server stopped")
+			}
+
+			// Phase 3: Stop HTTP server
 			logger.InfoContext(shutdownCtx, "stopping HTTP server")
 
 			if err := servers.api.Shutdown(shutdownCtx); err != nil {
@@ -628,4 +684,85 @@ func setupServer(
 			return ctx
 		},
 	}, nil
+}
+
+// setupUIServer builds the Web UI/API server served on the dedicated UI port.
+func setupUIServer(
+	ctx context.Context, cfg *config, tel *telemetry.Telemetry, uiService *transfers.Service,
+) (*http.Server, error) {
+	logger := logctx.LoggerFromContext(ctx)
+
+	r := chi.NewRouter()
+	r.Use(telemetry.RequestID)
+	r.Use(telemetry.NewHTTPMiddleware(cfg.Telemetry.ServiceName))
+	r.Use(telemetry.HTTPLogging)
+
+	username, password := resolveUICredentials(cfg)
+	if username == "" || password == "" {
+		logger.WarnContext(ctx, "Web UI credentials are not fully configured; set UI_USERNAME/UI_PASSWORD or TRANSMISSION_* credentials",
+			"component", "ui_server")
+	}
+
+	r.Use(rest.BasicAuth(username, password))
+
+	confirmSecret, err := generateConfirmSecret()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate confirm token secret: %w", err)
+	}
+
+	uiHandler := rest.NewUIHandler(uiService, buildConfigSnapshot(cfg), confirmSecret)
+	r.Mount("/", uiHandler.Routes())
+
+	return &http.Server{
+		Addr:         cfg.UI.BindAddress,
+		ReadTimeout:  cfg.Web.ReadTimeout,
+		WriteTimeout: cfg.Web.WriteTimeout,
+		IdleTimeout:  cfg.Web.IdleTimeout,
+		Handler:      r,
+		BaseContext: func(net.Listener) context.Context {
+			return ctx
+		},
+	}, nil
+}
+
+// resolveUICredentials returns the UI credentials, falling back to Transmission credentials.
+func resolveUICredentials(cfg *config) (string, string) {
+	username := cfg.UI.Username
+	if username == "" {
+		username = cfg.Transmission.Username
+	}
+
+	password := cfg.UI.Password
+	if password == "" {
+		password = cfg.Transmission.Password
+	}
+
+	return username, password
+}
+
+// generateConfirmSecret returns a random secret used to sign confirmation tokens.
+func generateConfirmSecret() ([]byte, error) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("failed to read random bytes: %w", err)
+	}
+
+	return secret, nil
+}
+
+// buildConfigSnapshot assembles the non-secret configuration exposed to the Web UI.
+func buildConfigSnapshot(cfg *config) rest.ConfigSnapshot {
+	return rest.ConfigSnapshot{
+		Version:           version.Version,
+		DownloadDir:       cfg.DownloadDir,
+		TargetLabel:       cfg.TargetLabel,
+		MaxParallel:       cfg.MaxParallel,
+		PollingInterval:   cfg.PollingInterval.String(),
+		CleanupInterval:   cfg.CleanupInterval.String(),
+		KeepDownloadedFor: cfg.KeepDownloadedFor.String(),
+		DownloadClient:    cfg.DownloadClient,
+		PutioSeedRatio:    cfg.PutioSeedRatio,
+		SonarrConfigured:  cfg.Sonarr.APIKey != "" && cfg.Sonarr.BaseURL != "",
+		RadarrConfigured:  cfg.Radarr.APIKey != "" && cfg.Radarr.BaseURL != "",
+	}
 }

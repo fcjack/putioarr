@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/italolelis/seedbox_downloader/internal/logctx"
@@ -26,16 +27,25 @@ type ConfigSnapshot struct {
 	RadarrConfigured  bool    `json:"radarrConfigured"`
 }
 
+// confirmTokenTTL bounds how long an issued confirmation token stays valid.
+const confirmTokenTTL = 5 * time.Minute
+
 // UIHandler exposes the JSON REST API consumed by the putioarr Web UI. It is mounted
 // on a dedicated port, separate from the Transmission RPC used by Sonarr/Radarr.
 type UIHandler struct {
-	svc    *transfers.Service
-	config ConfigSnapshot
+	svc     *transfers.Service
+	config  ConfigSnapshot
+	confirm *confirmTokenManager
 }
 
-// NewUIHandler creates a new Web UI API handler.
-func NewUIHandler(svc *transfers.Service, config ConfigSnapshot) *UIHandler {
-	return &UIHandler{svc: svc, config: config}
+// NewUIHandler creates a new Web UI API handler. confirmSecret signs the short-lived
+// confirmation tokens that guard destructive endpoints.
+func NewUIHandler(svc *transfers.Service, config ConfigSnapshot, confirmSecret []byte) *UIHandler {
+	return &UIHandler{
+		svc:     svc,
+		config:  config,
+		confirm: newConfirmTokenManager(confirmSecret, confirmTokenTTL),
+	}
 }
 
 // Routes returns the API router for the Web UI.
@@ -45,18 +55,30 @@ func (h *UIHandler) Routes() http.Handler {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", h.handleHealth)
 		r.Get("/config", h.handleConfig)
+		r.Get("/admin/confirm-token", h.handleConfirmToken)
 
 		r.Get("/transfers", h.handleListTransfers)
 		r.Get("/transfers/{id}", h.handleGetTransfer)
 		r.Post("/transfers/{id}/retry", h.handleRetryTransfer)
 		r.Post("/transfers/{id}/cancel", h.handleCancelTransfer)
-		r.Delete("/transfers/{id}", h.handleDeleteTransfer)
 
-		r.Post("/admin/db/reset", h.handleResetDB)
-		r.Post("/admin/downloads/purge", h.handlePurgeDownloads)
+		// Destructive endpoints require a valid confirmation token.
+		r.Group(func(r chi.Router) {
+			r.Use(h.confirm.middleware)
+			r.Delete("/transfers/{id}", h.handleDeleteTransfer)
+			r.Post("/admin/db/reset", h.handleResetDB)
+			r.Post("/admin/downloads/purge", h.handlePurgeDownloads)
+		})
 	})
 
 	return r
+}
+
+func (h *UIHandler) handleConfirmToken(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, r, http.StatusOK, map[string]interface{}{
+		"token":     h.confirm.issue(),
+		"expiresIn": int(confirmTokenTTL.Seconds()),
+	})
 }
 
 func (h *UIHandler) handleHealth(w http.ResponseWriter, r *http.Request) {

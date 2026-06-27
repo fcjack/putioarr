@@ -135,6 +135,7 @@ func (s *Service) List(ctx context.Context, filters ListFilters) ([]TransferView
 
 	for _, t := range transfers {
 		seen[t.ID] = struct{}{}
+
 		views = append(views, s.buildView(t, records[t.ID]))
 	}
 
