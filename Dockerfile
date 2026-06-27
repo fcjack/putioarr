@@ -1,3 +1,15 @@
+# Build the Vue SPA. No Node is present in the runtime image (distroless); assets are
+# embedded into the Go binary via go:embed at build time.
+FROM node:22 AS frontend
+
+WORKDIR /app/web
+
+COPY web/package.json ./
+RUN npm install
+
+COPY web/ ./
+RUN npm run build
+
 FROM golang:1.26 AS builder
 
 WORKDIR /app
@@ -8,6 +20,9 @@ RUN go mod download
 COPY VERSION ./
 COPY ./cmd/seedbox_downloader ./cmd/seedbox_downloader
 COPY ./internal ./internal
+
+# Overlay the built SPA so go:embed picks it up (replaces the .gitkeep placeholder).
+COPY --from=frontend /app/internal/http/ui/dist ./internal/http/ui/dist
 
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown

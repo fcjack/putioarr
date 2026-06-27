@@ -36,15 +36,18 @@ type UIHandler struct {
 	svc     *transfers.Service
 	config  ConfigSnapshot
 	confirm *confirmTokenManager
+	static  http.Handler
 }
 
 // NewUIHandler creates a new Web UI API handler. confirmSecret signs the short-lived
-// confirmation tokens that guard destructive endpoints.
-func NewUIHandler(svc *transfers.Service, config ConfigSnapshot, confirmSecret []byte) *UIHandler {
+// confirmation tokens that guard destructive endpoints. static serves the embedded SPA
+// for non-API routes; it may be nil (e.g. in tests) to disable static serving.
+func NewUIHandler(svc *transfers.Service, config ConfigSnapshot, confirmSecret []byte, static http.Handler) *UIHandler {
 	return &UIHandler{
 		svc:     svc,
 		config:  config,
 		confirm: newConfirmTokenManager(confirmSecret, confirmTokenTTL),
+		static:  static,
 	}
 }
 
@@ -70,6 +73,11 @@ func (h *UIHandler) Routes() http.Handler {
 			r.Post("/admin/downloads/purge", h.handlePurgeDownloads)
 		})
 	})
+
+	// Serve the embedded SPA for everything that is not an API route.
+	if h.static != nil {
+		r.Handle("/*", h.static)
+	}
 
 	return r
 }

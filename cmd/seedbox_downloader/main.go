@@ -17,6 +17,7 @@ import (
 	"github.com/italolelis/seedbox_downloader/internal/dc/putio"
 	"github.com/italolelis/seedbox_downloader/internal/downloader"
 	"github.com/italolelis/seedbox_downloader/internal/http/rest"
+	"github.com/italolelis/seedbox_downloader/internal/http/ui"
 	"github.com/italolelis/seedbox_downloader/internal/logctx"
 	"github.com/italolelis/seedbox_downloader/internal/notifier"
 	"github.com/italolelis/seedbox_downloader/internal/storage"
@@ -710,7 +711,12 @@ func setupUIServer(
 		return nil, fmt.Errorf("failed to generate confirm token secret: %w", err)
 	}
 
-	uiHandler := rest.NewUIHandler(uiService, buildConfigSnapshot(cfg), confirmSecret)
+	staticHandler, err := ui.Handler()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build ui static handler: %w", err)
+	}
+
+	uiHandler := rest.NewUIHandler(uiService, buildConfigSnapshot(cfg), confirmSecret, staticHandler)
 	r.Mount("/", uiHandler.Routes())
 
 	return &http.Server{

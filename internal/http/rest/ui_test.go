@@ -51,8 +51,12 @@ type fakeRemover struct{}
 func (fakeRemover) RemoveTransfers(context.Context, []string, bool) error { return nil }
 
 func newTestRouter(repo *fakeRepo, lister *fakeLister) http.Handler {
+	return newTestRouterWithStatic(repo, lister, nil)
+}
+
+func newTestRouterWithStatic(repo *fakeRepo, lister *fakeLister, static http.Handler) http.Handler {
 	svc := transfers.NewService(lister, repo, fakeRequeuer{}, fakeCanceller{}, fakeRemover{}, "tv-sonarr", "")
-	handler := rest.NewUIHandler(svc, rest.ConfigSnapshot{Version: "test"}, []byte("test-secret"))
+	handler := rest.NewUIHandler(svc, rest.ConfigSnapshot{Version: "test"}, []byte("test-secret"), static)
 
 	r := chi.NewRouter()
 	r.Use(rest.BasicAuth(testUser, testPass))
@@ -115,6 +119,37 @@ func TestUIListTransfers(t *testing.T) {
 
 	if len(body.Transfers) != 1 || body.Transfers[0].ID != "1" {
 		t.Fatalf("unexpected transfers: %+v", body.Transfers)
+	}
+}
+
+func TestUIServesSPAAlongsideAPI(t *testing.T) {
+	t.Parallel()
+
+	spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("INDEX"))
+	})
+
+	router := newTestRouterWithStatic(&fakeRepo{}, &fakeLister{}, spa)
+
+	// Non-API path is served by the SPA handler.
+	spaReq := httptest.NewRequest(http.MethodGet, "/transfers/123", nil)
+	spaReq.SetBasicAuth(testUser, testPass)
+	spaRec := httptest.NewRecorder()
+	router.ServeHTTP(spaRec, spaReq)
+
+	if spaRec.Code != http.StatusOK || spaRec.Body.String() != "INDEX" {
+		t.Fatalf("expected SPA index for non-API path, got %d %q", spaRec.Code, spaRec.Body.String())
+	}
+
+	// API path still resolves to the JSON API.
+	apiReq := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	apiReq.SetBasicAuth(testUser, testPass)
+	apiRec := httptest.NewRecorder()
+	router.ServeHTTP(apiRec, apiReq)
+
+	if apiRec.Code != http.StatusOK || apiRec.Body.String() == "INDEX" {
+		t.Fatalf("expected JSON API for /api/v1/health, got %d %q", apiRec.Code, apiRec.Body.String())
 	}
 }
 
