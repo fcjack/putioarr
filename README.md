@@ -9,7 +9,7 @@
 ![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-jackcoelho%2Fputioarr-2496ED?logo=docker&logoColor=white)
 
-[Getting Started](#getting-started) | [Configuration](#configuration) | [Put.io + *Arr Setup](#putio--arr-integration) | [Monitoring](#monitoring) | [Contributing](#contributing)
+[Getting Started](#getting-started) | [Configuration](#configuration) | [Put.io + *Arr Setup](#putio--arr-integration) | [Web UI](#web-ui) | [Monitoring](#monitoring) | [Contributing](#contributing)
 
 </div>
 
@@ -25,6 +25,7 @@ Seedbox Downloader is an event-driven Go service that automatically downloads co
 
 - **Dual seedbox support** — Deluge (JSON-RPC) and Put.io (OAuth2 API)
 - **Transmission RPC proxy** — *Arr apps see it as a Transmission client, no extra config needed
+- **Web UI** — Browser dashboard to monitor, retry, cancel, and remove transfers, plus admin actions
 - **Automatic import detection** — Monitors Sonarr/Radarr until files are imported, then cleans up
 - **Seed ratio enforcement** — Optionally wait for a target seed ratio before removing transfers
 - **Parallel downloads** — Configurable concurrency with progress tracking
@@ -131,6 +132,8 @@ services:
       TRANSMISSION_USERNAME: "admin"
       TRANSMISSION_PASSWORD: "secret"
       WEB_BIND_ADDRESS: "0.0.0.0:9091"
+      # Web UI dashboard (enabled by default on 9092)
+      UI_BIND_ADDRESS: "0.0.0.0:9092"
       # Optional: *Arr integration for import detection
       SONARR_API_KEY: "your-sonarr-api-key"
       SONARR_BASE_URL: "http://sonarr:8989"
@@ -139,7 +142,8 @@ services:
       # Optional: notifications
       DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/..."
     ports:
-      - "9091:9091"
+      - "9091:9091" # Transmission RPC proxy (for *Arr)
+      - "9092:9092" # Web UI dashboard
     volumes:
       - downloads:/downloads
     restart: unless-stopped
@@ -199,6 +203,15 @@ All configuration is done via environment variables.
 | `WEB_IDLE_TIMEOUT` | `5s` | HTTP idle timeout |
 | `WEB_SHUTDOWN_TIMEOUT` | `30s` | Graceful shutdown timeout |
 
+### Web UI
+
+| Variable | Default | Description |
+|---|---|---|
+| `UI_ENABLED` | `true` | Enable the browser dashboard and its REST API |
+| `UI_BIND_ADDRESS` | `0.0.0.0:9092` | Web UI listen address (separate port from the Transmission proxy) |
+| `UI_USERNAME` | | Basic-auth username (falls back to `TRANSMISSION_USERNAME`) |
+| `UI_PASSWORD` | | Basic-auth password (falls back to `TRANSMISSION_PASSWORD`) |
+
 ### *Arr Integration
 
 | Variable | Description |
@@ -246,6 +259,57 @@ The Transmission RPC proxy lets Sonarr, Radarr, and other *Arr apps use Put.io a
 
 Both paths typically point to `/downloads`. *Arr reads from the local `DOWNLOAD_DIR` after files are downloaded.
 
+## Web UI
+
+A built-in browser dashboard gives you visibility and control over the download pipeline — see every transfer's composite status, watch live progress, and recover from failures without touching the database or the filesystem by hand.
+
+It runs as a self-contained single-page app embedded directly in the binary (no extra container or reverse proxy needed) and is served on its **own port**, separate from the Transmission RPC proxy.
+
+### Transfers
+
+The main view lists every transfer with a merged status (Put.io + local download + import state), live progress, size, and speed. Per-row actions adapt to the transfer's state — **Retry** for failed/orphaned items, **Cancel** for in-flight local downloads, and **Delete** for everything.
+
+![Web UI — transfers list](docs/images/web-ui-transfers.png)
+
+Selecting a transfer opens a detail drawer with the full pipeline timeline, file list, save path, and any error message, alongside the same actions.
+
+![Web UI — transfer detail](docs/images/web-ui-detail.png)
+
+### Admin
+
+The admin tab surfaces the running configuration and a guarded "danger zone" for resetting the state database or purging the download directory. Destructive operations require a short-lived confirmation token, so they can't be triggered by accident or CSRF.
+
+![Web UI — admin panel](docs/images/web-ui-admin.png)
+
+### Enabling & accessing
+
+The Web UI is **enabled by default** on port `9092`. Expose the port and open it in your browser:
+
+```sh
+docker run --rm -p 9091:9091 -p 9092:9092 \
+  -e DOWNLOAD_CLIENT=putio \
+  -e PUTIO_TOKEN=your-token \
+  -e PUTIO_BASE_DIR=/downloads \
+  -e DOWNLOAD_DIR=/downloads \
+  -e TARGET_LABEL=sonarr \
+  -e TRANSMISSION_USERNAME=admin \
+  -e TRANSMISSION_PASSWORD=secret \
+  -v /path/to/downloads:/downloads \
+  jackcoelho/putioarr:latest
+```
+
+Then visit `http://localhost:9092`.
+
+### Authentication
+
+All Web UI endpoints (including the REST API under `/api/v1`) require **HTTP Basic Auth**. Credentials come from `UI_USERNAME` / `UI_PASSWORD`, falling back to `TRANSMISSION_USERNAME` / `TRANSMISSION_PASSWORD` when the UI-specific variables are unset. If neither is configured, the server logs a warning and access will be denied.
+
+> The UI is intended for use behind your own trusted network or reverse proxy. Always set credentials and use HTTPS when exposing it beyond localhost.
+
+### Disabling
+
+Set `UI_ENABLED=false` to turn the dashboard off entirely; the Transmission RPC proxy is unaffected.
+
 ## Monitoring
 
 The project ships with a complete Prometheus + Grafana monitoring stack in the `monitoring/` directory.
@@ -281,16 +345,19 @@ seedbox_downloader/
 │   │   └── putio/              #   Put.io API client
 │   ├── downloader/             # Parallel download orchestration
 │   │   └── progress/           #   Download progress tracking
-│   ├── http/rest/              # Transmission RPC proxy
+│   ├── http/rest/              # Transmission RPC proxy + Web UI REST API
+│   ├── http/ui/                # Embedded Vue SPA (go:embed)
 │   ├── notifier/               # Discord webhook notifications
 │   ├── storage/sqlite/         # SQLite state persistence
 │   ├── svc/arr/                # Sonarr/Radarr API clients
+│   ├── svc/transfers/          # Web UI read model & actions
 │   ├── telemetry/              # OpenTelemetry instrumentation
 │   ├── transfer/               # Domain models & orchestrator
 │   └── logctx/                 # Structured logging helpers
+├── web/                        # Vue 3 + Vite + TypeScript frontend source
 ├── monitoring/                 # Prometheus + Grafana stack
 │   └── grafana/dashboards/     #   Pre-built dashboard
-├── Dockerfile                  # Multi-stage distroless build
+├── Dockerfile                  # Multi-stage distroless build (Node + Go)
 ├── docker-compose.telemetry.yml
 └── .github/workflows/          # CI: lint, test, build, publish
 ```
@@ -305,7 +372,22 @@ go test -race ./...
 
 # Run linter
 golangci-lint run
+
+# Build the Web UI and embed it, then build the binary
+make build-all
 ```
+
+### Frontend development
+
+The Web UI lives in `web/` (Vue 3 + Vite + TypeScript). For a hot-reloading dev server that proxies the API to a locally running backend:
+
+```sh
+cd web
+npm install
+npm run dev
+```
+
+`make frontend` builds the production bundle into `internal/http/ui/dist`, where it is embedded into the Go binary via `go:embed`.
 
 - **Go version:** 1.26+
 - **Linter config:** [`.golangci.yml`](.golangci.yml)
