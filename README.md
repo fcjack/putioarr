@@ -8,6 +8,9 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-jackcoelho%2Fputioarr-2496ED?logo=docker&logoColor=white)
+[![Docs](https://img.shields.io/badge/docs-mkdocs-526CFE?logo=materialformkdocs&logoColor=white)](https://fcjack.github.io/putioarr/)
+
+**📖 Full documentation: [fcjack.github.io/putioarr](https://fcjack.github.io/putioarr/)**
 
 [Getting Started](#getting-started) | [Configuration](#configuration) | [Put.io + *Arr Setup](#putio--arr-integration) | [Web UI](#web-ui) | [Monitoring](#monitoring) | [Contributing](#contributing)
 

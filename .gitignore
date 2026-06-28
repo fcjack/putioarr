@@ -59,6 +59,9 @@ node_modules/
 /internal/http/ui/dist/*
 !/internal/http/ui/dist/.gitkeep
 
+# MkDocs build output
+/site/
+
 # Misc
 *.bak 
 downloads/
