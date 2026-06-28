@@ -37,11 +37,17 @@ type config struct {
 	PutioBaseDir   string  `envconfig:"PUTIO_BASE_DIR"`
 	PutioSeedRatio float64 `envconfig:"PUTIO_SEED_RATIO" default:"0"`
 
-	TargetLabel       string         `envconfig:"TARGET_LABEL"`
-	DownloadDir       string         `envconfig:"DOWNLOAD_DIR" required:"true"`
-	KeepDownloadedFor time.Duration  `envconfig:"KEEP_DOWNLOADED_FOR" default:"24h"`
-	PollingInterval   time.Duration  `envconfig:"POLLING_INTERVAL" default:"10m"`
-	CleanupInterval   time.Duration  `envconfig:"CLEANUP_INTERVAL" default:"10m"`
+	TargetLabel       string        `envconfig:"TARGET_LABEL"`
+	DownloadDir       string        `envconfig:"DOWNLOAD_DIR" required:"true"`
+	KeepDownloadedFor time.Duration `envconfig:"KEEP_DOWNLOADED_FOR" default:"24h"`
+	PollingInterval   time.Duration `envconfig:"POLLING_INTERVAL" default:"10m"`
+	CleanupInterval   time.Duration `envconfig:"CLEANUP_INTERVAL" default:"10m"`
+
+	CleanupAfterImport     bool          `envconfig:"CLEANUP_AFTER_IMPORT" default:"true"`
+	CleanupRemoveEmptyDirs bool          `envconfig:"CLEANUP_REMOVE_EMPTY_DIRS" default:"true"`
+	CleanupSweepInterval   time.Duration `envconfig:"CLEANUP_SWEEP_INTERVAL" default:"24h"`
+	CleanupSweepMinAge     time.Duration `envconfig:"CLEANUP_SWEEP_MIN_AGE" default:"24h"`
+
 	LogLevel          *slog.LevelVar `envconfig:"LOG_LEVEL" default:"INFO"`
 	DiscordWebhookURL string         `envconfig:"DISCORD_WEBHOOK_URL"`
 	DBPath            string         `envconfig:"DB_PATH" default:"downloads.db"`
@@ -287,10 +293,15 @@ func initializeServices(ctx context.Context, cfg *config, tel *telemetry.Telemet
 
 	logger.InfoContext(ctx, "download client ready", "client_type", cfg.DownloadClient)
 
-	arrServices := []*arr.Client{
-		arr.NewClient(cfg.Sonarr.APIKey, cfg.Sonarr.BaseURL),
-		arr.NewClient(cfg.Radarr.APIKey, cfg.Radarr.BaseURL),
-	}
+	arrServices := buildArrServices(cfg)
+
+	logger.InfoContext(ctx, "*arr import detection configured",
+		"configured_apps", len(arrServices),
+		"cleanup_after_import", cfg.CleanupAfterImport,
+		"cleanup_remove_empty_dirs", cfg.CleanupRemoveEmptyDirs,
+		"cleanup_sweep_interval", cfg.CleanupSweepInterval.String(),
+		"cleanup_sweep_min_age", cfg.CleanupSweepMinAge.String(),
+	)
 
 	instrumentedTC := transfer.NewInstrumentedTransferClient(dc.(transfer.TransferClient), tel, cfg.DownloadClient)
 
@@ -300,6 +311,12 @@ func initializeServices(ctx context.Context, cfg *config, tel *telemetry.Telemet
 		instrumentedDC,
 		instrumentedTC,
 		arrServices,
+		downloader.CleanupOptions{
+			AfterImport:     cfg.CleanupAfterImport,
+			RemoveEmptyDirs: cfg.CleanupRemoveEmptyDirs,
+			SweepInterval:   cfg.CleanupSweepInterval,
+			SweepMinAge:     cfg.CleanupSweepMinAge,
+		},
 	)
 
 	setupNotificationForDownloader(ctx, dr, downloader, cfg, cfg.PutioSeedRatio)
@@ -307,6 +324,7 @@ func initializeServices(ctx context.Context, cfg *config, tel *telemetry.Telemet
 	transferOrchestrator := transfer.NewTransferOrchestrator(dr, instrumentedDC, cfg.TargetLabel, cfg.PollingInterval)
 	transferOrchestrator.ProduceTransfers(ctx)
 	downloader.WatchDownloads(ctx, transferOrchestrator.OnDownloadQueued)
+	downloader.StartSweep(ctx)
 
 	uiService := transfers.NewService(
 		instrumentedDC,
@@ -607,6 +625,22 @@ func handleTransferMissing(
 			logger.WarnContext(ctx, "failed to send missing transfer notification", "transfer_id", event.Transfer.ID, "err", notifyErr)
 		}
 	}
+}
+
+// buildArrServices constructs *arr clients only for apps that are fully configured,
+// so unconfigured clients never short-circuit import detection with request errors.
+func buildArrServices(cfg *config) []*arr.Client {
+	var services []*arr.Client
+
+	if cfg.Sonarr.APIKey != "" && cfg.Sonarr.BaseURL != "" {
+		services = append(services, arr.NewClient("sonarr", cfg.Sonarr.APIKey, cfg.Sonarr.BaseURL))
+	}
+
+	if cfg.Radarr.APIKey != "" && cfg.Radarr.BaseURL != "" {
+		services = append(services, arr.NewClient("radarr", cfg.Radarr.APIKey, cfg.Radarr.BaseURL))
+	}
+
+	return services
 }
 
 // This is an abstract factory for the download client.

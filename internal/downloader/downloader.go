@@ -37,12 +37,30 @@ const (
 	dirPerm = 0755
 )
 
+// CleanupOptions controls local post-import cleanup behavior under DOWNLOAD_DIR.
+type CleanupOptions struct {
+	// AfterImport enables removing local download artifacts once an *arr app
+	// confirms the release was imported. When false, imports are still detected
+	// (so Put.io cleanup proceeds) but local files are left in place.
+	AfterImport bool
+	// RemoveEmptyDirs prunes empty parent directories up to DOWNLOAD_DIR after the
+	// release root is removed.
+	RemoveEmptyDirs bool
+	// SweepInterval is how often the background sweep runs to prune leftover empty
+	// directories under DOWNLOAD_DIR. Zero or negative disables the sweep.
+	SweepInterval time.Duration
+	// SweepMinAge is the minimum age (by modification time) an empty directory must
+	// reach before the sweep removes it, protecting in-progress downloads.
+	SweepMinAge time.Duration
+}
+
 type Downloader struct {
 	downloadDir string
 	dc          transfer.DownloadClient
 	tc          transfer.TransferClient
 	arrServices []*arr.Client
 	maxParallel int
+	cleanup     CleanupOptions
 
 	// activeDownloads maps an in-flight transfer ID to its cancel func so the UI can cancel it.
 	activeDownloads sync.Map
@@ -60,6 +78,7 @@ func NewDownloader(
 	dc transfer.DownloadClient,
 	tc transfer.TransferClient,
 	arrServices []*arr.Client,
+	cleanup CleanupOptions,
 ) *Downloader {
 	return &Downloader{
 		downloadDir:                downloadDir,
@@ -67,6 +86,7 @@ func NewDownloader(
 		maxParallel:                maxParallel,
 		tc:                         tc,
 		arrServices:                arrServices,
+		cleanup:                    cleanup,
 		OnFileDownloadError:        make(chan *transfer.File),
 		OnTransferDownloadError:    make(chan *transfer.Transfer),
 		OnTransferDownloadFinished: make(chan *transfer.Transfer),
@@ -285,7 +305,7 @@ func (d *Downloader) WatchForImported(ctx context.Context, t *transfer.Transfer,
 
 				return
 			case <-ticker.C:
-				imported, err := d.checkForImported(ctx, t)
+				imported, err := d.cleanupAfterImport(ctx, t)
 				if err != nil {
 					logger.ErrorContext(ctx, "failed to check for imported transfer", "transfer_id", t.ID, "err", err)
 
@@ -421,34 +441,115 @@ func (d *Downloader) WatchForSeeding(ctx context.Context, t *transfer.Transfer, 
 	}()
 }
 
-func (d *Downloader) checkForImported(ctx context.Context, transfer *transfer.Transfer) (bool, error) {
+// cleanupAfterImport asks each configured *arr app whether the transfer's release has
+// been imported. On the first confirmation it removes the full release root (media and
+// sidecars) under DOWNLOAD_DIR, prunes now-empty parent directories, and reports the
+// transfer as imported. Nothing is deleted until an import is confirmed.
+func (d *Downloader) cleanupAfterImport(ctx context.Context, t *transfer.Transfer) (bool, error) {
 	logger := logctx.LoggerFromContext(ctx)
-	logger.DebugContext(ctx, "checking if transfer has been imported", "transfer_id", transfer.ID, "transfer_name", transfer.Name)
 
-	for _, file := range transfer.Files {
-		for _, arrService := range d.arrServices {
-			filePath := filepath.Join(d.downloadDir, file.Path)
+	releaseRoot := d.releaseRoot(t)
 
-			imported, err := arrService.CheckImported(ctx, filePath)
-			if err != nil {
-				return false, fmt.Errorf("failed to check if transfer has been imported: %w", err)
-			}
+	logger.DebugContext(ctx, "checking if transfer has been imported",
+		"transfer_id", t.ID, "transfer_name", t.Name, "release_root", releaseRoot)
 
-			if imported {
-				logger.InfoContext(ctx, "transfer has been imported", "transfer_id", transfer.ID, "transfer_name", transfer.Name)
-
-				if err := os.RemoveAll(filePath); err != nil {
-					return false, fmt.Errorf("failed to remove file: %w", err)
-				}
-
-				logger.InfoContext(ctx, "transfer removed", "transfer_id", transfer.ID, "transfer_name", transfer.Name)
-
-				return true, nil
-			}
+	for _, arrService := range d.arrServices {
+		if !arrService.IsConfigured() {
+			continue
 		}
+
+		imported, err := arrService.CheckImported(ctx, releaseRoot)
+		if err != nil {
+			return false, fmt.Errorf("failed to check if transfer has been imported via %s: %w", arrService.Name(), err)
+		}
+
+		if !imported {
+			continue
+		}
+
+		logger.InfoContext(ctx, "transfer has been imported",
+			"transfer_id", t.ID, "transfer_name", t.Name, "imported_by", arrService.Name(), "release_root", releaseRoot)
+
+		if err := d.removeReleaseRoot(ctx, t, releaseRoot); err != nil {
+			return false, err
+		}
+
+		return true, nil
 	}
 
 	return false, nil
+}
+
+// releaseRoot returns the absolute path of a transfer's release under DOWNLOAD_DIR.
+// Single-file transfers map to a flat file at DOWNLOAD_DIR/<name>; multi-file transfers
+// map to the directory DOWNLOAD_DIR/<name>/ (issue #2 path semantics).
+func (d *Downloader) releaseRoot(t *transfer.Transfer) string {
+	return filepath.Join(d.downloadDir, t.Name)
+}
+
+// removeReleaseRoot deletes the release root and prunes empty parents, gated on the
+// configured cleanup options. Every deletion is structured-logged.
+func (d *Downloader) removeReleaseRoot(ctx context.Context, t *transfer.Transfer, releaseRoot string) error {
+	logger := logctx.LoggerFromContext(ctx)
+
+	if !d.cleanup.AfterImport {
+		logger.InfoContext(ctx, "local cleanup disabled, leaving release in place",
+			"transfer_id", t.ID, "transfer_name", t.Name, "release_root", releaseRoot)
+
+		return nil
+	}
+
+	if err := os.RemoveAll(releaseRoot); err != nil {
+		return fmt.Errorf("failed to remove release root %s: %w", releaseRoot, err)
+	}
+
+	logger.InfoContext(ctx, "release removed",
+		"transfer_id", t.ID, "transfer_name", t.Name, "removed_path", releaseRoot)
+
+	if d.cleanup.RemoveEmptyDirs {
+		d.removeEmptyParents(ctx, filepath.Dir(releaseRoot))
+	}
+
+	return nil
+}
+
+// removeEmptyParents walks upward from dir removing empty directories until it reaches
+// (and stops at) DOWNLOAD_DIR, a non-empty directory, or an error. DOWNLOAD_DIR itself
+// is never removed, and the walk never escapes above it.
+func (d *Downloader) removeEmptyParents(ctx context.Context, dir string) {
+	logger := logctx.LoggerFromContext(ctx)
+
+	stopAt := filepath.Clean(d.downloadDir)
+
+	for {
+		current := filepath.Clean(dir)
+
+		// Stop at DOWNLOAD_DIR itself or anything not strictly nested under it.
+		if current == stopAt || !strings.HasPrefix(current, stopAt+string(os.PathSeparator)) {
+			return
+		}
+
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			logger.WarnContext(ctx, "failed to read directory while pruning empty parents", "dir", current, "err", err)
+
+			return
+		}
+
+		if len(entries) > 0 {
+			return
+		}
+
+		if err := os.Remove(current); err != nil {
+			logger.WarnContext(ctx, "failed to remove empty directory", "dir", current, "err", err)
+
+			return
+		}
+
+		logger.InfoContext(ctx, "removed empty parent directory", "removed_path", current)
+
+		dir = filepath.Dir(current)
+	}
 }
 
 func (d *Downloader) ensureTargetDir(ctx context.Context, targetPath string, logger *slog.Logger) error {

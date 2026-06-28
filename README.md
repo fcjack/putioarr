@@ -153,6 +153,10 @@ All configuration is done via environment variables.
 | `KEEP_DOWNLOADED_FOR` | `24h` | How long to keep local files before cleanup |
 | `POLLING_INTERVAL` | `10m` | How often to poll for new transfers |
 | `CLEANUP_INTERVAL` | `10m` | How often to run the cleanup job |
+| `CLEANUP_AFTER_IMPORT` | `true` | Remove the local release (files + sidecars) once Sonarr/Radarr confirm the import. Set `false` to leave files in place (debugging) |
+| `CLEANUP_REMOVE_EMPTY_DIRS` | `true` | Prune empty parent directories under `DOWNLOAD_DIR` after a release is removed |
+| `CLEANUP_SWEEP_INTERVAL` | `24h` | How often the background sweep prunes leftover empty directories under `DOWNLOAD_DIR`. Set `0` to disable |
+| `CLEANUP_SWEEP_MIN_AGE` | `24h` | Minimum age an empty directory must reach before the sweep removes it |
 | `MAX_PARALLEL` | `5` | Max concurrent file downloads |
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `DB_PATH` | `downloads.db` | Path to the SQLite database |
@@ -195,6 +199,18 @@ All configuration is done via environment variables.
 | `SONARR_BASE_URL` | Sonarr API URL (e.g., `http://sonarr:8989`) |
 | `RADARR_API_KEY` | Radarr API key for import detection |
 | `RADARR_BASE_URL` | Radarr API URL (e.g., `http://radarr:7878`) |
+
+#### Post-import cleanup
+
+Once any configured *Arr app confirms a release was imported (Sonarr/Radarr `downloadFolderImported`/`downloadImported` history events, matched against the release path under `DOWNLOAD_DIR`), putioarr removes the **entire release root** locally:
+
+- **Single-file release** → the flat file (e.g. `DOWNLOAD_DIR/Movie.2024.1080p.mkv`) is deleted, leaving no empty `.mkv`-named directory.
+- **Folder / season pack** → the whole `DOWNLOAD_DIR/<release>/` directory (all episodes and sidecars like `.nfo`/`.srt`) is deleted.
+- Empty parent directories are then pruned up to (but never including) `DOWNLOAD_DIR`.
+
+Nothing is deleted until an import is confirmed, and unrelated downloads still awaiting import are never touched. Put.io remote cleanup still honors `PUTIO_SEED_RATIO`. Use `CLEANUP_AFTER_IMPORT=false` to disable local deletion.
+
+A background **sweep job** runs daily (`CLEANUP_SWEEP_INTERVAL`, default `24h`) as a safety net for orphans left by crashes or partial imports: it prunes empty directories under `DOWNLOAD_DIR` that are older than `CLEANUP_SWEEP_MIN_AGE` (default `24h`), so in-progress downloads are never touched. Set `CLEANUP_SWEEP_INTERVAL=0` to disable it.
 
 ### Telemetry
 

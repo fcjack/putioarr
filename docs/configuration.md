@@ -12,6 +12,10 @@ All configuration is done via environment variables.
 | `KEEP_DOWNLOADED_FOR` | `24h` | How long to keep local files before cleanup |
 | `POLLING_INTERVAL` | `10m` | How often to poll for new transfers |
 | `CLEANUP_INTERVAL` | `10m` | How often to run the cleanup job |
+| `CLEANUP_AFTER_IMPORT` | `true` | Remove the local release (files + sidecars) once Sonarr/Radarr confirm the import |
+| `CLEANUP_REMOVE_EMPTY_DIRS` | `true` | Prune empty parent directories under `DOWNLOAD_DIR` after a release is removed |
+| `CLEANUP_SWEEP_INTERVAL` | `24h` | How often the background sweep prunes leftover empty directories under `DOWNLOAD_DIR` (`0` disables) |
+| `CLEANUP_SWEEP_MIN_AGE` | `24h` | Minimum age an empty directory must reach before the sweep removes it |
 | `MAX_PARALLEL` | `5` | Max concurrent file downloads |
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `DB_PATH` | `downloads.db` | Path to the SQLite database |
