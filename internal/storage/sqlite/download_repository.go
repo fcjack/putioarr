@@ -16,7 +16,7 @@ func NewDownloadRepository(dbConn *sql.DB) *DownloadRepository {
 }
 
 func (r *DownloadRepository) GetDownloads() ([]storage.DownloadRecord, error) {
-	rows, err := r.db.Query(`SELECT transfer_id, downloaded_at, status, locked_by FROM downloads`)
+	rows, err := r.db.Query(`SELECT transfer_id, name, downloaded_at, status, locked_by FROM downloads`)
 	if err != nil {
 		return nil, err
 	}
@@ -27,19 +27,21 @@ func (r *DownloadRepository) GetDownloads() ([]storage.DownloadRecord, error) {
 	for rows.Next() {
 		var record storage.DownloadRecord
 
-		var lockedBy sql.NullString
+		var name, lockedBy sql.NullString
 
-		err := rows.Scan(&record.DownloadID, &record.DownloadedAt, &record.Status, &lockedBy)
+		err := rows.Scan(&record.DownloadID, &name, &record.DownloadedAt, &record.Status, &lockedBy)
 		if err != nil {
 			return nil, err
 		}
 
-		record.LockedBy = ""
-		if lockedBy.Valid {
-			record.LockedBy = lockedBy.String
-		}
+		record.Name = name.String
+		record.LockedBy = lockedBy.String
 
 		downloads = append(downloads, record)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return downloads, nil
@@ -50,11 +52,11 @@ func (r *DownloadRepository) GetDownloads() ([]storage.DownloadRecord, error) {
 func (r *DownloadRepository) GetByTransferID(transferID string) (storage.DownloadRecord, error) {
 	var record storage.DownloadRecord
 
-	var lockedBy sql.NullString
+	var name, lockedBy sql.NullString
 
 	err := r.db.
-		QueryRow(`SELECT transfer_id, downloaded_at, status, locked_by FROM downloads WHERE transfer_id = ?`, transferID).
-		Scan(&record.DownloadID, &record.DownloadedAt, &record.Status, &lockedBy)
+		QueryRow(`SELECT transfer_id, name, downloaded_at, status, locked_by FROM downloads WHERE transfer_id = ?`, transferID).
+		Scan(&record.DownloadID, &name, &record.DownloadedAt, &record.Status, &lockedBy)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return storage.DownloadRecord{}, storage.ErrNotFound
@@ -63,16 +65,15 @@ func (r *DownloadRepository) GetByTransferID(transferID string) (storage.Downloa
 		return storage.DownloadRecord{}, err
 	}
 
-	record.LockedBy = ""
-	if lockedBy.Valid {
-		record.LockedBy = lockedBy.String
-	}
+	record.Name = name.String
+	record.LockedBy = lockedBy.String
 
 	return record, nil
 }
 
 // ClaimTransfer atomically sets status to 'downloading' and locked_by to instanceID if status is 'pending' or 'failed'.
-func (r *DownloadRepository) ClaimTransfer(transferID string) (bool, error) {
+// The human-readable name is persisted so the transfer can still be identified in the UI after it is cleaned up from Put.io.
+func (r *DownloadRepository) ClaimTransfer(transferID, name string) (bool, error) {
 	var status string
 
 	err := r.db.QueryRow(`SELECT status FROM downloads WHERE transfer_id = ?`, transferID).Scan(&status)
@@ -84,15 +85,17 @@ func (r *DownloadRepository) ClaimTransfer(transferID string) (bool, error) {
 		return false, storage.ErrDownloaded
 	}
 
-	// Now do the upsert/claim
+	// Now do the upsert/claim. excluded.name backfills the name on rows created
+	// before the column existed (or claimed without one).
 	rows, err := r.db.Exec(`
-		INSERT INTO downloads (transfer_id, downloaded_at, status, locked_by)
-		VALUES (?, ?, 'downloading', ?)
+		INSERT INTO downloads (transfer_id, downloaded_at, status, locked_by, name)
+		VALUES (?, ?, 'downloading', ?, ?)
 		ON CONFLICT(transfer_id) DO UPDATE SET
 			status = 'downloading',
-			locked_by = excluded.locked_by
+			locked_by = excluded.locked_by,
+			name = COALESCE(NULLIF(downloads.name, ''), excluded.name)
 		WHERE downloads.status IN ('pending', 'failed') AND (downloads.locked_by IS NULL OR downloads.locked_by = '')
-	`, transferID, time.Now().Format(time.RFC3339), storage.GenerateInstanceID())
+	`, transferID, time.Now().Format(time.RFC3339), storage.GenerateInstanceID(), name)
 	if err != nil {
 		return false, err
 	}

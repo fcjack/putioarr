@@ -49,6 +49,46 @@ func TestGetDownloads_ScansTableColumns(t *testing.T) {
 	require.Equal(t, "instance-1", records[0].LockedBy)
 }
 
+func TestClaimTransferPersistsName(t *testing.T) {
+	t.Parallel()
+
+	repo := newTestRepo(t)
+
+	claimed, err := repo.ClaimTransfer("42", "The Matrix (1999)")
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	record, err := repo.GetByTransferID("42")
+	require.NoError(t, err)
+	require.Equal(t, "The Matrix (1999)", record.Name)
+
+	records, err := repo.GetDownloads()
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, "The Matrix (1999)", records[0].Name)
+}
+
+func TestClaimTransferBackfillsLegacyName(t *testing.T) {
+	t.Parallel()
+
+	repo := newTestRepo(t)
+
+	// Simulate a legacy row created before the name column was populated.
+	_, err := repo.db.Exec(
+		`INSERT INTO downloads (transfer_id, downloaded_at, status, locked_by, name) VALUES (?, ?, 'failed', NULL, NULL)`,
+		"99", "2026-06-26T12:00:00Z",
+	)
+	require.NoError(t, err)
+
+	claimed, err := repo.ClaimTransfer("99", "Backfilled Name")
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	record, err := repo.GetByTransferID("99")
+	require.NoError(t, err)
+	require.Equal(t, "Backfilled Name", record.Name)
+}
+
 func TestGetByTransferID(t *testing.T) {
 	t.Parallel()
 

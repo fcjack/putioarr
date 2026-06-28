@@ -337,7 +337,7 @@ func (d *Downloader) CleanupTransfer(ctx context.Context, t *transfer.Transfer) 
 
 	_, err := backoff.Retry[struct{}](ctx, func() (struct{}, error) {
 		if err := d.tc.RemoveTransfers(ctx, []string{hashStr}, true); err != nil {
-			if strings.Contains(err.Error(), "transfer not found") {
+			if errors.Is(err, putio.ErrTransferNotFound) {
 				logger.InfoContext(ctx, "Put.io transfer already removed, treating as success",
 					"transfer_id", t.ID, "transfer_name", t.Name)
 

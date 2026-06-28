@@ -3,7 +3,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/cenkalti/backoff/v5"
 	// Import the SQLite driver.
@@ -43,7 +45,8 @@ func InitDB(ctx context.Context, dbPath string, maxOpenConns, maxIdleConns int) 
 		transfer_id TEXT UNIQUE,
 		downloaded_at DATETIME,
 		status TEXT DEFAULT 'pending',
-		locked_by TEXT
+		locked_by TEXT,
+		name TEXT
 	)`)
 
 	if err != nil {
@@ -52,5 +55,28 @@ func InitDB(ctx context.Context, dbPath string, maxOpenConns, maxIdleConns int) 
 		return nil, err
 	}
 
+	// Migrate pre-existing databases that lack the name column. SQLite has no
+	// "ADD COLUMN IF NOT EXISTS", so a duplicate-column error is expected and
+	// safely ignored when the column is already present.
+	if err := ensureNameColumn(db); err != nil {
+		db.Close()
+
+		return nil, err
+	}
+
 	return db, nil
+}
+
+// ensureNameColumn adds the downloads.name column to legacy databases. It is a
+// no-op when the column already exists.
+func ensureNameColumn(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE downloads ADD COLUMN name TEXT`); err != nil {
+		if strings.Contains(err.Error(), "duplicate column name") {
+			return nil
+		}
+
+		return fmt.Errorf("failed to add name column: %w", err)
+	}
+
+	return nil
 }

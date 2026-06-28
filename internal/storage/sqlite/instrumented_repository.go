@@ -61,13 +61,13 @@ func (r *InstrumentedDownloadRepository) GetByTransferID(transferID string) (sto
 }
 
 // ClaimTransfer claims a transfer with telemetry.
-func (r *InstrumentedDownloadRepository) ClaimTransfer(transferID string) (bool, error) {
+func (r *InstrumentedDownloadRepository) ClaimTransfer(transferID, name string) (bool, error) {
 	var result bool
 
 	var err error
 
 	instrumentedErr := r.telemetry.InstrumentDBOperation(context.Background(), "claim_transfer", func(ctx context.Context) error {
-		result, err = r.repo.ClaimTransfer(transferID)
+		result, err = r.repo.ClaimTransfer(transferID, name)
 
 		return err
 	})

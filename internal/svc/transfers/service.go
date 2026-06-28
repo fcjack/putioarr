@@ -243,9 +243,16 @@ func (s *Service) buildView(t *transfer.Transfer, record storage.DownloadRecord)
 func (s *Service) buildOrphanView(record storage.DownloadRecord) TransferView {
 	status := transfer.ComputeStatus("", record.Status, 0, 0, false)
 
+	// Prefer the persisted human-readable name; fall back to the ID for legacy
+	// rows that were claimed before the name was stored.
+	name := record.Name
+	if name == "" {
+		name = record.DownloadID
+	}
+
 	return TransferView{
 		ID:            record.DownloadID,
-		Name:          record.DownloadID,
+		Name:          name,
 		Label:         s.label,
 		Status:        string(status),
 		LocalStatus:   record.Status,

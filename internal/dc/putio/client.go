@@ -27,7 +27,8 @@ var (
 	ErrTransferFilesNotFound = errors.New("transfer files not found on Put.io")
 
 	// ErrTransferNotFound indicates the transfer itself no longer exists on Put.io.
-	// Detected when a previously-claimed transfer arrives at DownloadTransfer with zero files.
+	// Detected when a previously-claimed transfer arrives at DownloadTransfer with zero
+	// files, or when a removal is requested for a transfer that is already gone.
 	ErrTransferNotFound = errors.New("transfer not found on Put.io")
 )
 
@@ -337,7 +338,7 @@ func (c *Client) RemoveTransfers(ctx context.Context, transferIDs []string, dele
 	putioTransfers := c.filterMatchingTransferIds(transfers, transferIDs)
 
 	if len(putioTransfers) == 0 {
-		return fmt.Errorf("transfer not found: %v", transferIDs)
+		return fmt.Errorf("transfer not found: %v: %w", transferIDs, ErrTransferNotFound)
 	}
 
 	for _, transfer := range putioTransfers {

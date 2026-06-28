@@ -5,8 +5,10 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/italolelis/seedbox_downloader/internal/dc/putio"
 	"github.com/italolelis/seedbox_downloader/internal/storage"
 	"github.com/italolelis/seedbox_downloader/internal/svc/transfers"
 	"github.com/italolelis/seedbox_downloader/internal/transfer"
@@ -89,6 +91,27 @@ func TestServiceDeleteScopes(t *testing.T) {
 
 	if len(repo.deleted) != 1 || repo.deleted[0] != "7" {
 		t.Errorf("expected DB delete of 7, got %v", repo.deleted)
+	}
+}
+
+// TestServiceDeleteAlreadyCleanedUp verifies that deleting an item already removed
+// from Put.io (e.g. a cleaned-up transfer) succeeds instead of surfacing an error.
+func TestServiceDeleteAlreadyCleanedUp(t *testing.T) {
+	t.Parallel()
+
+	lister := &mockLister{transfers: []*transfer.Transfer{}}
+	repo := &mockRepo{byID: map[string]storage.DownloadRecord{"7": {DownloadID: "7", Name: "Show", Status: "cleaned_up"}}}
+
+	svc, _, _, remover := newService(lister, repo)
+	remover.returnError = fmt.Errorf("transfer not found: [hash]: %w", putio.ErrTransferNotFound)
+
+	scopes := transfers.DeleteScopes{Putio: true, DB: true}
+	if err := svc.Delete(context.Background(), "7", scopes); err != nil {
+		t.Fatalf("Delete should treat an already-removed Put.io transfer as success, got: %v", err)
+	}
+
+	if len(repo.deleted) != 1 || repo.deleted[0] != "7" {
+		t.Errorf("expected DB delete of 7 to still run, got %v", repo.deleted)
 	}
 }
 

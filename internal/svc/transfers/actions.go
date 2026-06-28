@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/italolelis/seedbox_downloader/internal/dc/putio"
 	"github.com/italolelis/seedbox_downloader/internal/transfer"
 )
 
@@ -86,11 +87,17 @@ func (s *Service) Delete(ctx context.Context, id string, scopes DeleteScopes) er
 
 // removeFromPutio cancels the Put.io transfer and deletes its remote files. Put.io
 // removal is keyed by the sha1 hash of the transfer ID (matching the Transmission proxy).
+// A transfer that is already gone from Put.io (e.g. an item cleaned up after import) is
+// treated as success: deletion is idempotent, the desired end state is already met.
 func (s *Service) removeFromPutio(ctx context.Context, id string) error {
 	hash := sha1.Sum([]byte(id))
 	hashStr := hex.EncodeToString(hash[:])
 
 	if err := s.putioRemover.RemoveTransfers(ctx, []string{hashStr}, true); err != nil {
+		if errors.Is(err, putio.ErrTransferNotFound) {
+			return nil
+		}
+
 		return fmt.Errorf("failed to remove transfer from Put.io: %w", err)
 	}
 

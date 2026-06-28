@@ -110,7 +110,7 @@ func (o *TransferOrchestrator) Requeue(ctx context.Context, transferID string) e
 			return fmt.Errorf("transfer %s is not available for download", transferID)
 		}
 
-		claimed, err := o.repo.ClaimTransfer(transferID)
+		claimed, err := o.repo.ClaimTransfer(transferID, t.Name)
 		if err != nil && err != storage.ErrDownloaded {
 			return fmt.Errorf("failed to claim transfer: %w", err)
 		}
@@ -200,7 +200,7 @@ func (o *TransferOrchestrator) watchTransfers(ctx context.Context) error {
 			continue
 		}
 
-		claimed, err := o.repo.ClaimTransfer(transfer.ID)
+		claimed, err := o.repo.ClaimTransfer(transfer.ID, transfer.Name)
 		if err != nil {
 			if err == storage.ErrDownloaded {
 				transferLogger.DebugContext(ctx, "skipping transfer because it's already downloaded")
