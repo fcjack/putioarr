@@ -1,4 +1,4 @@
-site_name: Seedbox Downloader
+site_name: PutioArr
 site_description: Automated media pipeline that bridges your seedbox with Sonarr, Radarr, and other *Arr applications.
 site_url: https://fcjack.github.io/putioarr/
 repo_name: fcjack/putioarr

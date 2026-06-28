@@ -1,4 +1,4 @@
-# Seedbox Downloader
+# PutioArr
 
 **Automated media pipeline that bridges your seedbox with Sonarr, Radarr, and other *Arr applications.**
 
