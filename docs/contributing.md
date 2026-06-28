@@ -33,7 +33,6 @@ seedbox_downloader/
 ├── internal/
 │   ├── config/                 # Environment variable loading
 │   ├── dc/                     # Download client adapters
-│   │   ├── deluge/             #   Deluge JSON-RPC client
 │   │   └── putio/              #   Put.io API client
 │   ├── downloader/             # Parallel download orchestration
 │   │   └── progress/           #   Download progress tracking

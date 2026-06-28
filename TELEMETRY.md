@@ -142,7 +142,7 @@ err := telemetry.InstrumentDBOperation(ctx, "select_users", func(ctx context.Con
 })
 
 // Instrument a client operation
-err := telemetry.InstrumentClientOperation(ctx, "deluge", "get_torrents", func(ctx context.Context) error {
+err := telemetry.InstrumentClientOperation(ctx, "putio", "get_torrents", func(ctx context.Context) error {
     // Client operation here
     return nil
 })
@@ -302,7 +302,7 @@ Signs of high cardinality problems:
 
 **Prevention**:
 - Never use unique identifiers (transfer IDs, file names) as metric attributes
-- Limit attribute values to bounded sets (status: success/error, client: deluge/putio)
+- Limit attribute values to bounded sets (status: success/error, client: putio)
 - Use high-cardinality data in logs and traces, not metrics
 
 ### Missing Business Metrics

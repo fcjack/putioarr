@@ -6,7 +6,7 @@ All configuration is done via environment variables.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DOWNLOAD_CLIENT` | `deluge` | Seedbox provider: `deluge` or `putio` |
+| `DOWNLOAD_CLIENT` | `putio` | Seedbox provider: `putio` |
 | `DOWNLOAD_DIR` | *required* | Local directory for downloaded files |
 | `TARGET_LABEL` | | Label/tag to filter transfers |
 | `KEEP_DOWNLOADED_FOR` | `24h` | How long to keep local files before cleanup |
@@ -16,16 +16,6 @@ All configuration is done via environment variables.
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `DB_PATH` | `downloads.db` | Path to the SQLite database |
 | `DISCORD_WEBHOOK_URL` | | Discord webhook for notifications |
-
-## Deluge Settings
-
-| Variable | Description |
-|---|---|
-| `DELUGE_BASE_URL` | Base URL for the Deluge web UI |
-| `DELUGE_API_URL_PATH` | JSON-RPC endpoint path (e.g., `/deluge/json`) |
-| `DELUGE_USERNAME` | Deluge web UI username |
-| `DELUGE_PASSWORD` | Deluge web UI password |
-| `DELUGE_COMPLETED_DIR` | Directory for completed downloads |
 
 ## Put.io Settings
 

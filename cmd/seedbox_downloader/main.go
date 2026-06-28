@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi"
-	"github.com/italolelis/seedbox_downloader/internal/dc/deluge"
 	"github.com/italolelis/seedbox_downloader/internal/dc/putio"
 	"github.com/italolelis/seedbox_downloader/internal/downloader"
 	"github.com/italolelis/seedbox_downloader/internal/http/rest"
@@ -32,13 +31,7 @@ import (
 
 // Config struct for environment variables.
 type config struct {
-	DownloadClient string `envconfig:"DOWNLOAD_CLIENT" default:"deluge"`
-
-	DelugeBaseURL      string `envconfig:"DELUGE_BASE_URL"`
-	DelugeAPIURLPath   string `envconfig:"DELUGE_API_URL_PATH"`
-	DelugeUsername     string `envconfig:"DELUGE_USERNAME"`
-	DelugePassword     string `envconfig:"DELUGE_PASSWORD"`
-	DelugeCompletedDir string `envconfig:"DELUGE_COMPLETED_DIR"`
+	DownloadClient string `envconfig:"DOWNLOAD_CLIENT" default:"putio"`
 
 	PutioToken     string  `envconfig:"PUTIO_TOKEN"`
 	PutioBaseDir   string  `envconfig:"PUTIO_BASE_DIR"`
@@ -619,8 +612,6 @@ func handleTransferMissing(
 // This is an abstract factory for the download client.
 func buildDownloadClient(cfg *config) (transfer.DownloadClient, error) {
 	switch cfg.DownloadClient {
-	case "deluge":
-		return deluge.NewClient(cfg.DelugeBaseURL, cfg.DelugeAPIURLPath, cfg.DelugeCompletedDir, cfg.DelugeUsername, cfg.DelugePassword, true), nil
 	case "putio":
 		return putio.NewClient(cfg.PutioToken, true), nil
 	}

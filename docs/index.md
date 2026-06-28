@@ -12,11 +12,11 @@
 
 ## What is this?
 
-Seedbox Downloader is an event-driven Go service that automatically downloads completed torrents from your seedbox and integrates with the *Arr ecosystem. It supports **Deluge** and **Put.io** as seedbox providers, with a built-in **Transmission RPC proxy** so Sonarr and Radarr treat it like a native download client.
+Seedbox Downloader is an event-driven Go service that automatically downloads completed torrents from your seedbox and integrates with the *Arr ecosystem. It uses **Put.io** as the seedbox provider, with a built-in **Transmission RPC proxy** so Sonarr and Radarr treat it like a native download client.
 
 ## Key Features
 
-- **Dual seedbox support** — Deluge (JSON-RPC) and Put.io (OAuth2 API)
+- **Put.io support** — Put.io (OAuth2 API)
 - **Transmission RPC proxy** — *Arr apps see it as a Transmission client, no extra config needed
 - **Web UI** — Browser dashboard to monitor, retry, cancel, and remove transfers, plus admin actions
 - **Automatic import detection** — Monitors Sonarr/Radarr until files are imported, then cleans up
@@ -32,8 +32,7 @@ Seedbox Downloader is an event-driven Go service that automatically downloads co
 ```text
                     ┌──────────────┐
                     │  Seedbox     │
-                    │ (Deluge /    │
-                    │  Put.io)     │
+                    │  (Put.io)    │
                     └──────┬───────┘
                            │ poll for tagged transfers
                            ▼

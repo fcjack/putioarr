@@ -26,7 +26,7 @@ import (
 // SAFE attributes (bounded cardinality):
 // - Operation types (limited set: "download", "upload", "delete")
 // - Status values (limited set: "success", "error", "timeout")
-// - Client types (limited set: "deluge", "putio")
+// - Client types (limited set: "putio")
 // - Component names (limited set: "database", "download_client")
 //
 // For debugging, high-cardinality data should be:

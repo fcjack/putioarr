@@ -2,35 +2,18 @@
 
 ## Docker (recommended)
 
-=== "Put.io mode"
-
-    ```sh
-    docker run --rm -p 9091:9091 -p 9092:9092 \
-      -e DOWNLOAD_CLIENT=putio \
-      -e PUTIO_TOKEN=your-token \
-      -e PUTIO_BASE_DIR=/downloads \
-      -e TARGET_LABEL=sonarr \
-      -e DOWNLOAD_DIR=/downloads \
-      -e TRANSMISSION_USERNAME=admin \
-      -e TRANSMISSION_PASSWORD=secret \
-      -v /path/to/downloads:/downloads \
-      jackcoelho/putioarr:latest
-    ```
-
-=== "Deluge mode"
-
-    ```sh
-    docker run --rm \
-      -e DOWNLOAD_CLIENT=deluge \
-      -e DELUGE_BASE_URL=https://your-deluge-server \
-      -e DELUGE_API_URL_PATH=/deluge/json \
-      -e DELUGE_USERNAME=admin \
-      -e DELUGE_PASSWORD=secret \
-      -e TARGET_LABEL=sonarr \
-      -e DOWNLOAD_DIR=/downloads \
-      -v /path/to/downloads:/downloads \
-      jackcoelho/putioarr:latest
-    ```
+```sh
+docker run --rm -p 9091:9091 -p 9092:9092 \
+  -e DOWNLOAD_CLIENT=putio \
+  -e PUTIO_TOKEN=your-token \
+  -e PUTIO_BASE_DIR=/downloads \
+  -e TARGET_LABEL=sonarr \
+  -e DOWNLOAD_DIR=/downloads \
+  -e TRANSMISSION_USERNAME=admin \
+  -e TRANSMISSION_PASSWORD=secret \
+  -v /path/to/downloads:/downloads \
+  jackcoelho/putioarr:latest
+```
 
 Port `9091` serves the Transmission RPC proxy used by *Arr; port `9092` serves the [Web UI](web-ui.md).
 

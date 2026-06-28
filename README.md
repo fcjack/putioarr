@@ -22,11 +22,11 @@
 
 ## What is this?
 
-Seedbox Downloader is an event-driven Go service that automatically downloads completed torrents from your seedbox and integrates with the *Arr ecosystem. It supports **Deluge** and **Put.io** as seedbox providers, with a built-in **Transmission RPC proxy** so Sonarr and Radarr treat it like a native download client.
+Seedbox Downloader is an event-driven Go service that automatically downloads completed torrents from your seedbox and integrates with the *Arr ecosystem. It uses **Put.io** as the seedbox provider, with a built-in **Transmission RPC proxy** so Sonarr and Radarr treat it like a native download client.
 
 ### Key Features
 
-- **Dual seedbox support** — Deluge (JSON-RPC) and Put.io (OAuth2 API)
+- **Put.io support** — Put.io (OAuth2 API)
 - **Transmission RPC proxy** — *Arr apps see it as a Transmission client, no extra config needed
 - **Web UI** — Browser dashboard to monitor, retry, cancel, and remove transfers, plus admin actions
 - **Automatic import detection** — Monitors Sonarr/Radarr until files are imported, then cleans up
@@ -42,8 +42,7 @@ Seedbox Downloader is an event-driven Go service that automatically downloads co
 ```
                     ┌──────────────┐
                     │  Seedbox     │
-                    │ (Deluge /    │
-                    │  Put.io)     │
+                    │  (Put.io)    │
                     └──────┬───────┘
                            │ poll for tagged transfers
                            ▼
@@ -76,23 +75,6 @@ Seedbox Downloader is an event-driven Go service that automatically downloads co
 ## Getting Started
 
 ### Docker (recommended)
-
-**Deluge mode:**
-
-```sh
-docker run --rm \
-  -e DOWNLOAD_CLIENT=deluge \
-  -e DELUGE_BASE_URL=https://your-deluge-server \
-  -e DELUGE_API_URL_PATH=/deluge/json \
-  -e DELUGE_USERNAME=admin \
-  -e DELUGE_PASSWORD=secret \
-  -e TARGET_LABEL=sonarr \
-  -e DOWNLOAD_DIR=/downloads \
-  -v /path/to/downloads:/downloads \
-  jackcoelho/putioarr:latest
-```
-
-**Put.io mode:**
 
 ```sh
 docker run --rm -p 9091:9091 \
@@ -165,7 +147,7 @@ All configuration is done via environment variables.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DOWNLOAD_CLIENT` | `deluge` | Seedbox provider: `deluge` or `putio` |
+| `DOWNLOAD_CLIENT` | `putio` | Seedbox provider: `putio` |
 | `DOWNLOAD_DIR` | *required* | Local directory for downloaded files |
 | `TARGET_LABEL` | | Label/tag to filter transfers |
 | `KEEP_DOWNLOADED_FOR` | `24h` | How long to keep local files before cleanup |
@@ -175,16 +157,6 @@ All configuration is done via environment variables.
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `DB_PATH` | `downloads.db` | Path to the SQLite database |
 | `DISCORD_WEBHOOK_URL` | | Discord webhook for notifications |
-
-### Deluge Settings
-
-| Variable | Description |
-|---|---|
-| `DELUGE_BASE_URL` | Base URL for the Deluge web UI |
-| `DELUGE_API_URL_PATH` | JSON-RPC endpoint path (e.g., `/deluge/json`) |
-| `DELUGE_USERNAME` | Deluge web UI username |
-| `DELUGE_PASSWORD` | Deluge web UI password |
-| `DELUGE_COMPLETED_DIR` | Directory for completed downloads |
 
 ### Put.io Settings
 
@@ -348,7 +320,6 @@ seedbox_downloader/
 ├── internal/
 │   ├── config/                 # Environment variable loading
 │   ├── dc/                     # Download client adapters
-│   │   ├── deluge/             #   Deluge JSON-RPC client
 │   │   └── putio/              #   Put.io API client
 │   ├── downloader/             # Parallel download orchestration
 │   │   └── progress/           #   Download progress tracking
