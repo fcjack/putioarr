@@ -209,8 +209,8 @@ All configuration is done via environment variables.
 |---|---|---|
 | `UI_ENABLED` | `true` | Enable the browser dashboard and its REST API |
 | `UI_BIND_ADDRESS` | `0.0.0.0:9092` | Web UI listen address (separate port from the Transmission proxy) |
-| `UI_USERNAME` | | Basic-auth username (falls back to `TRANSMISSION_USERNAME`) |
-| `UI_PASSWORD` | | Basic-auth password (falls back to `TRANSMISSION_PASSWORD`) |
+| `UI_USERNAME` | | Optional basic-auth username — auth is disabled unless both this and `UI_PASSWORD` are set |
+| `UI_PASSWORD` | | Optional basic-auth password — auth is disabled unless both this and `UI_USERNAME` are set |
 
 ### *Arr Integration
 
@@ -302,9 +302,13 @@ Then visit `http://localhost:9092`.
 
 ### Authentication
 
-All Web UI endpoints (including the REST API under `/api/v1`) require **HTTP Basic Auth**. Credentials come from `UI_USERNAME` / `UI_PASSWORD`, falling back to `TRANSMISSION_USERNAME` / `TRANSMISSION_PASSWORD` when the UI-specific variables are unset. If neither is configured, the server logs a warning and access will be denied.
+The Web UI is **open by default** — it's a read-mostly helper for following downloads and exposes no secrets, so no login is required out of the box.
 
-> The UI is intended for use behind your own trusted network or reverse proxy. Always set credentials and use HTTPS when exposing it beyond localhost.
+To put it behind **HTTP Basic Auth**, set both `UI_USERNAME` and `UI_PASSWORD`; the UI and its REST API (`/api/v1`) will then require those credentials. If either is unset, auth stays disabled.
+
+Regardless of auth, destructive admin actions (DB reset, directory purge, delete) still require a short-lived confirmation token, so they can't be triggered accidentally or via CSRF.
+
+> If you expose the UI beyond a trusted network, set credentials and put it behind a reverse proxy with HTTPS.
 
 ### Disabling
 

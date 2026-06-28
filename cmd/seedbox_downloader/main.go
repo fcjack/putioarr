@@ -698,13 +698,13 @@ func setupUIServer(
 	r.Use(telemetry.NewHTTPMiddleware(cfg.Telemetry.ServiceName))
 	r.Use(telemetry.HTTPLogging)
 
-	username, password := resolveUICredentials(cfg)
-	if username == "" || password == "" {
-		logger.WarnContext(ctx, "Web UI credentials are not fully configured; set UI_USERNAME/UI_PASSWORD or TRANSMISSION_* credentials",
+	if cfg.UI.Username != "" && cfg.UI.Password != "" {
+		r.Use(rest.BasicAuth(cfg.UI.Username, cfg.UI.Password))
+		logger.InfoContext(ctx, "Web UI authentication enabled", "component", "ui_server")
+	} else {
+		logger.InfoContext(ctx, "Web UI authentication disabled; set UI_USERNAME and UI_PASSWORD to require login",
 			"component", "ui_server")
 	}
-
-	r.Use(rest.BasicAuth(username, password))
 
 	confirmSecret, err := generateConfirmSecret()
 	if err != nil {
@@ -729,21 +729,6 @@ func setupUIServer(
 			return ctx
 		},
 	}, nil
-}
-
-// resolveUICredentials returns the UI credentials, falling back to Transmission credentials.
-func resolveUICredentials(cfg *config) (string, string) {
-	username := cfg.UI.Username
-	if username == "" {
-		username = cfg.Transmission.Username
-	}
-
-	password := cfg.UI.Password
-	if password == "" {
-		password = cfg.Transmission.Password
-	}
-
-	return username, password
 }
 
 // generateConfirmSecret returns a random secret used to sign confirmation tokens.
