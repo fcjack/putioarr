@@ -1,6 +1,6 @@
 # Build the Vue SPA. No Node is present in the runtime image (distroless); assets are
 # embedded into the Go binary via go:embed at build time.
-FROM node:22 AS frontend
+FROM node:26 AS frontend
 
 WORKDIR /app/web
 
