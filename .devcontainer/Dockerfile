@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/go:2.2-bookworm
+FROM mcr.microsoft.com/devcontainers/go:2.3-bookworm
 
 # Install docker-in-docker
 RUN apt-get update && apt-get install -y \
