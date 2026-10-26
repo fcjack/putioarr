@@ -59,6 +59,9 @@ type TransmissionTorrent struct {
 	SecondsDownloading int64                     `json:"secondsDownloading"`
 	ErrorString        *string                   `json:"errorString,omitempty"`
 	DownloadedEver     int64                     `json:"downloadedEver"`
+	UploadedEver       int64                     `json:"uploadedEver"`
+	UploadRatio        float64                   `json:"uploadRatio"`
+	SecondsSeeding     int64                     `json:"secondsSeeding"`
 	Labels             []string                  `json:"labels"`
 	PeersConnected     int64                     `json:"peersConnected"`
 	PeersSendingToUs   int64                     `json:"peersSendingToUs"`
@@ -581,6 +584,9 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 		Status:             status,
 		ErrorString:        errorString,
 		DownloadedEver:     downloadedEver,
+		UploadedEver:       transfer.Uploaded,
+		UploadRatio:        uploadRatio(transfer.Uploaded, transfer.Downloaded),
+		SecondsSeeding:     transfer.SecondsSeeding,
 		Labels:             []string{h.label},
 		PeersConnected:     transfer.PeersConnected,
 		PeersSendingToUs:   transfer.PeersSendingToUs,
@@ -592,6 +598,14 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 		SeedIdleLimit:      100,
 		SeedIdleMode:       1,
 	}, nil
+}
+
+func uploadRatio(uploaded, downloaded int64) float64 {
+	if downloaded <= 0 {
+		return 0
+	}
+
+	return float64(uploaded) / float64(downloaded)
 }
 
 func (h *TransmissionHandler) handleTorrentGet(ctx context.Context) (*TransmissionResponse, error) {

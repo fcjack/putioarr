@@ -35,6 +35,9 @@ type mockPutioClient struct {
 	getTaggedTorrentsFunc    func(ctx context.Context, label string) ([]*transfer.Transfer, error)
 	addTransferCalled        bool
 	addTransferByBytesCalled bool
+	removeTransfersCalled    bool
+	removedIDs               []string
+	deleteLocalData          bool
 	lastMagnetLink           string
 	lastFilename             string
 	lastParentName           string
@@ -68,7 +71,30 @@ func (m *mockPutioClient) GetTaggedTorrents(ctx context.Context, label string) (
 }
 
 func (m *mockPutioClient) RemoveTransfers(ctx context.Context, ids []string, deleteData bool) error {
+	m.removeTransfersCalled = true
+	m.removedIDs = ids
+	m.deleteLocalData = deleteData
+
 	return nil
+}
+
+func TestHandleTorrentRemove_RequestsPutioCleanup(t *testing.T) {
+	client := &mockPutioClient{}
+	handler := NewTransmissionHandler("testuser", "testpass", client, "test-label", "/downloads", "", nil, nil)
+
+	reqBody := `{"method":"torrent-remove","arguments":{"ids":["transfer-hash"],"delete-local-data":true}}`
+	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
+	req.SetBasicAuth("testuser", "testpass")
+	w := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp TransmissionResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "success", resp.Result)
+	require.True(t, client.removeTransfersCalled)
+	require.Equal(t, []string{"transfer-hash"}, client.removedIDs)
+	require.True(t, client.deleteLocalData)
 }
 
 func TestValidateBencodeStructure(t *testing.T) {
@@ -732,6 +758,9 @@ func TestHandleTorrentGet_PeerAndSpeedFields(t *testing.T) {
 					PeersSendingToUs:   5,
 					PeersGettingFromUs: 3,
 					DownloadSpeed:      5242880, // 5MB/s
+					Downloaded:         1000,
+					Uploaded:           2400,
+					SecondsSeeding:     259200,
 				},
 			}, nil
 		},
@@ -762,6 +791,9 @@ func TestHandleTorrentGet_PeerAndSpeedFields(t *testing.T) {
 	require.Equal(t, int64(5), torrent.PeersSendingToUs)
 	require.Equal(t, int64(3), torrent.PeersGettingFromUs)
 	require.Equal(t, int64(5242880), torrent.RateDownload)
+	require.Equal(t, int64(2400), torrent.UploadedEver)
+	require.InDelta(t, 2.4, torrent.UploadRatio, 0.0001)
+	require.Equal(t, int64(259200), torrent.SecondsSeeding)
 }
 
 func TestHandleTorrentGet_LabelsPopulated(t *testing.T) {

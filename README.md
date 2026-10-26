@@ -29,8 +29,8 @@ Seedbox Downloader is an event-driven Go service that automatically downloads co
 - **Put.io support** — Put.io (OAuth2 API)
 - **Transmission RPC proxy** — *Arr apps see it as a Transmission client, no extra config needed
 - **Web UI** — Browser dashboard to monitor, retry, cancel, and remove transfers, plus admin actions
-- **Automatic import detection** — Monitors Sonarr/Radarr until files are imported, then cleans up
-- **Seed ratio enforcement** — Optionally wait for a target seed ratio before removing transfers
+- **Automatic import detection** — Monitors Sonarr/Radarr until files are imported
+- **Arr-managed seeding retention** — Sonarr/Radarr remove transfers when configured ratio or seeding-time limits are met
 - **Parallel downloads** — Configurable concurrency with progress tracking
 - **Discord notifications** — Rich embeds for download events, failures, and missing transfers
 - **Full observability** — OpenTelemetry traces, Prometheus metrics, Grafana dashboards included
@@ -68,8 +68,8 @@ Seedbox Downloader is an event-driven Go service that automatically downloads co
 2. Claims transfers atomically in SQLite (safe for multiple instances)
 3. Downloads files in parallel to local storage
 4. Monitors *Arr APIs until import is confirmed
-5. Waits for seed ratio threshold (if configured)
-6. Cleans up transfer from seedbox and local storage
+5. Keeps the Put.io transfer available until Sonarr/Radarr requests removal after its configured seed ratio or seeding-time limit
+6. Cleans up Put.io transfer when Sonarr/Radarr sends `torrent-remove`; local cleanup follows `CLEANUP_AFTER_IMPORT`
 7. Sends Discord notifications at each stage
 
 ## Getting Started
@@ -168,7 +168,6 @@ All configuration is done via environment variables.
 |---|---|---|
 | `PUTIO_TOKEN` | *required* | Your Put.io OAuth token |
 | `PUTIO_BASE_DIR` | *required* | Directory in Put.io for file storage |
-| `PUTIO_SEED_RATIO` | `0` | Target seed ratio before cleanup (0 = immediate) |
 
 ### Transmission Proxy (for *Arr)
 
@@ -208,7 +207,7 @@ Once any configured *Arr app confirms a release was imported (Sonarr/Radarr `dow
 - **Folder / season pack** → the whole `DOWNLOAD_DIR/<release>/` directory (all episodes and sidecars like `.nfo`/`.srt`) is deleted.
 - Empty parent directories are then pruned up to (but never including) `DOWNLOAD_DIR`.
 
-Nothing is deleted until an import is confirmed, and unrelated downloads still awaiting import are never touched. Put.io remote cleanup still honors `PUTIO_SEED_RATIO`. Use `CLEANUP_AFTER_IMPORT=false` to disable local deletion.
+Local cleanup still follows `CLEANUP_AFTER_IMPORT`. Import confirmation no longer deletes the Put.io transfer: Sonarr/Radarr retain it until configured seed ratio or seeding-time limit is met, then send `torrent-remove` to putioarr. Put.io upload totals and seeding time are exposed through Transmission RPC for that decision.
 
 A background **sweep job** runs daily (`CLEANUP_SWEEP_INTERVAL`, default `24h`) as a safety net for orphans left by crashes or partial imports: it prunes empty directories under `DOWNLOAD_DIR` that are older than `CLEANUP_SWEEP_MIN_AGE` (default `24h`), so in-progress downloads are never touched. Set `CLEANUP_SWEEP_INTERVAL=0` to disable it.
 

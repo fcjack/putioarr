@@ -216,7 +216,7 @@ func TestGetTaggedTorrents_SingleFileUsesTransferName(t *testing.T) {
 		fmt.Fprintf(w, `{"transfers":[{
 			"id":1,"name":%q,"file_id":100,"save_parent_id":200,
 			"status":"COMPLETED","percent_done":100,"size":1000,
-			"source":"magnet:test","downloaded":1000,
+			"source":"magnet:test","downloaded":1000,"uploaded":2400,"seconds_seeding":259200,
 			"peers_connected":0,"peers_getting_from_us":0,"peers_sending_to_us":0
 		}]}`, transferName)
 	})
@@ -244,6 +244,8 @@ func TestGetTaggedTorrents_SingleFileUsesTransferName(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, torrents, 1)
 	assert.Equal(t, transferName, torrents[0].Name)
+	assert.Equal(t, int64(2400), torrents[0].Uploaded)
+	assert.Equal(t, int64(259200), torrents[0].SecondsSeeding)
 	require.Len(t, torrents[0].Files, 1)
 	assert.Equal(t, transferName, torrents[0].Files[0].Path)
 }

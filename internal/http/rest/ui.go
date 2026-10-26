@@ -14,17 +14,16 @@ import (
 
 // ConfigSnapshot is the non-secret configuration exposed to the Web UI.
 type ConfigSnapshot struct {
-	Version           string  `json:"version"`
-	DownloadDir       string  `json:"downloadDir"`
-	TargetLabel       string  `json:"targetLabel"`
-	MaxParallel       int     `json:"maxParallel"`
-	PollingInterval   string  `json:"pollingInterval"`
-	CleanupInterval   string  `json:"cleanupInterval"`
-	KeepDownloadedFor string  `json:"keepDownloadedFor"`
-	DownloadClient    string  `json:"downloadClient"`
-	PutioSeedRatio    float64 `json:"putioSeedRatio"`
-	SonarrConfigured  bool    `json:"sonarrConfigured"`
-	RadarrConfigured  bool    `json:"radarrConfigured"`
+	Version           string `json:"version"`
+	DownloadDir       string `json:"downloadDir"`
+	TargetLabel       string `json:"targetLabel"`
+	MaxParallel       int    `json:"maxParallel"`
+	PollingInterval   string `json:"pollingInterval"`
+	CleanupInterval   string `json:"cleanupInterval"`
+	KeepDownloadedFor string `json:"keepDownloadedFor"`
+	DownloadClient    string `json:"downloadClient"`
+	SonarrConfigured  bool   `json:"sonarrConfigured"`
+	RadarrConfigured  bool   `json:"radarrConfigured"`
 }
 
 // confirmTokenTTL bounds how long an issued confirmation token stays valid.

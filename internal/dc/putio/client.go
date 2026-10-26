@@ -98,6 +98,8 @@ func (c *Client) GetTaggedTorrents(ctx context.Context, tag string) ([]*transfer
 			PeersGettingFromUs: int64(t.PeersGettingFromUs),
 			PeersSendingToUs:   int64(t.PeersSendingToUs),
 			Downloaded:         int64(t.Downloaded),
+			Uploaded:           t.Uploaded,
+			SecondsSeeding:     int64(t.SecondsSeeding),
 			DownloadSpeed:      int64(t.DownloadSpeed),
 		}
 

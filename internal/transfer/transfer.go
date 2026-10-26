@@ -31,6 +31,7 @@ type Transfer struct {
 	SavePath           string
 	Progress           float64
 	Downloaded         int64
+	Uploaded           int64
 	DownloadSpeed      int64
 	ErrorMessage       string
 	EstimatedTime      int64

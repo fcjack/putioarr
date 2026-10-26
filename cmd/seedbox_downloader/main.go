@@ -33,10 +33,8 @@ import (
 type config struct {
 	DownloadClient string `envconfig:"DOWNLOAD_CLIENT" default:"putio"`
 
-	PutioToken     string  `envconfig:"PUTIO_TOKEN"`
-	PutioBaseDir   string  `envconfig:"PUTIO_BASE_DIR"`
-	PutioSeedRatio float64 `envconfig:"PUTIO_SEED_RATIO" default:"0"`
-
+	PutioToken        string        `envconfig:"PUTIO_TOKEN"`
+	PutioBaseDir      string        `envconfig:"PUTIO_BASE_DIR"`
 	TargetLabel       string        `envconfig:"TARGET_LABEL"`
 	DownloadDir       string        `envconfig:"DOWNLOAD_DIR" required:"true"`
 	KeepDownloadedFor time.Duration `envconfig:"KEEP_DOWNLOADED_FOR" default:"24h"`
@@ -135,7 +133,6 @@ func run(ctx context.Context) error {
 		"db_path", cfg.DBPath,
 		"bind_address", cfg.Web.BindAddress,
 		"telemetry_enabled", cfg.Telemetry.Enabled,
-		"putio_seed_ratio", cfg.PutioSeedRatio,
 	)
 
 	logger.InfoContext(ctx, "initializing telemetry")
@@ -319,7 +316,7 @@ func initializeServices(ctx context.Context, cfg *config, tel *telemetry.Telemet
 		},
 	)
 
-	setupNotificationForDownloader(ctx, dr, downloader, cfg, cfg.PutioSeedRatio)
+	setupNotificationForDownloader(ctx, dr, downloader, cfg)
 
 	transferOrchestrator := transfer.NewTransferOrchestrator(dr, instrumentedDC, cfg.TargetLabel, cfg.PollingInterval)
 	transferOrchestrator.ProduceTransfers(ctx)
@@ -456,7 +453,6 @@ func setupNotificationForDownloader(
 	repo storage.DownloadRepository,
 	downloader *downloader.Downloader,
 	cfg *config,
-	seedRatio float64,
 ) {
 	logger := logctx.LoggerFromContext(ctx).WithGroup("notification")
 
@@ -478,7 +474,7 @@ func setupNotificationForDownloader(
 					logger.InfoContext(ctx, "restarting notification loop after panic",
 						"operation", "notification_loop")
 					time.Sleep(time.Second) // Brief backoff before restart
-					setupNotificationForDownloader(ctx, repo, downloader, cfg, seedRatio)
+					setupNotificationForDownloader(ctx, repo, downloader, cfg)
 				}
 			}
 		}()
@@ -496,7 +492,7 @@ func setupNotificationForDownloader(
 			case t := <-downloader.OnTransferDownloadFinished:
 				handleDownloadFinished(ctx, logger, repo, notif, downloader, t, cfg.PollingInterval)
 			case t := <-downloader.OnTransferImported:
-				handleTransferImported(ctx, logger, notif, downloader, t, cfg.PollingInterval, seedRatio)
+				handleTransferImported(ctx, logger, notif, t)
 			case event := <-downloader.OnTransferMissing:
 				handleTransferMissing(ctx, logger, repo, notif, event)
 			}
@@ -562,16 +558,9 @@ func handleTransferImported(
 	ctx context.Context,
 	logger *slog.Logger,
 	notif notifier.Notifier,
-	dl *downloader.Downloader,
 	t *transfer.Transfer,
-	pollingInterval time.Duration,
-	seedRatio float64,
 ) {
-	if seedRatio > 0 {
-		dl.WatchForSeeding(ctx, t, pollingInterval, seedRatio)
-	} else {
-		dl.CleanupTransfer(ctx, t)
-	}
+	logger.InfoContext(ctx, "transfer imported; waiting for *arr to request removal", "transfer_id", t.ID, "transfer_name", t.Name)
 
 	if notif != nil {
 		if notifyErr := notif.Notify(
@@ -777,7 +766,6 @@ func buildConfigSnapshot(cfg *config) rest.ConfigSnapshot {
 		CleanupInterval:   cfg.CleanupInterval.String(),
 		KeepDownloadedFor: cfg.KeepDownloadedFor.String(),
 		DownloadClient:    cfg.DownloadClient,
-		PutioSeedRatio:    cfg.PutioSeedRatio,
 		SonarrConfigured:  cfg.Sonarr.APIKey != "" && cfg.Sonarr.BaseURL != "",
 		RadarrConfigured:  cfg.Radarr.APIKey != "" && cfg.Radarr.BaseURL != "",
 	}
