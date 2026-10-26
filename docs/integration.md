@@ -19,6 +19,8 @@ The Transmission RPC proxy lets Sonarr, Radarr, and other *Arr apps use Put.io a
 
 4. Test the connection and save
 
+Configure seeding goals on each torrent indexer in Sonarr/Radarr (for example, ratio `1.0` and seed time `4320` minutes). putioarr stores those per-torrent values from Transmission `torrent-set` requests and reports torrents stopped when either goal is reached; *Arr then removes the transfer through `torrent-remove` when **Remove Completed Downloads** is enabled. Existing torrents without a saved goal use putioarr defaults: ratio `1.0` or `4320` minutes.
+
 ## Directory Mapping
 
 | Variable | Where | Purpose |

@@ -2,7 +2,9 @@ package rest
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,12 +22,102 @@ import (
 
 // mockLocalDownloadTracker implements LocalDownloadTracker for testing.
 type mockLocalDownloadTracker struct {
-	records []storage.DownloadRecord
-	err     error
+	records     []storage.DownloadRecord
+	err         error
+	criteria    map[string]storage.TorrentSeedCriteria
+	hashToID    map[string]string
+	idToHash    map[string]string
+	criteriaErr error
 }
 
 func (m *mockLocalDownloadTracker) GetDownloads() ([]storage.DownloadRecord, error) {
 	return m.records, m.err
+}
+
+func (m *mockLocalDownloadTracker) UpdateTorrentSeedCriteria(hash string, criteria storage.TorrentSeedCriteria) error {
+	if m.criteriaErr != nil {
+		return m.criteriaErr
+	}
+	if m.criteria == nil {
+		m.criteria = make(map[string]storage.TorrentSeedCriteria)
+	}
+	previous := m.criteria[hash]
+	if criteria.SeedRatioLimit != nil {
+		previous.SeedRatioLimit = criteria.SeedRatioLimit
+	}
+	if criteria.SeedRatioMode != nil {
+		previous.SeedRatioMode = criteria.SeedRatioMode
+	}
+	if criteria.SeedIdleLimit != nil {
+		previous.SeedIdleLimit = criteria.SeedIdleLimit
+	}
+	if criteria.SeedIdleMode != nil {
+		previous.SeedIdleMode = criteria.SeedIdleMode
+	}
+	if criteria.Stopped != nil {
+		previous.Stopped = criteria.Stopped
+	}
+	m.criteria[hash] = previous
+	return nil
+}
+
+func (m *mockLocalDownloadTracker) GetTorrentSeedCriteria(transferID, hash string) (storage.TorrentSeedCriteria, error) {
+	if m.criteriaErr != nil {
+		return storage.TorrentSeedCriteria{}, m.criteriaErr
+	}
+	criteria := m.criteria[hash]
+	if criteria.SeedRatioLimit == nil {
+		for _, byHash := range m.criteria {
+			if byHash.SeedRatioLimit != nil {
+				criteria = byHash
+				break
+			}
+		}
+	}
+	return criteria, nil
+}
+
+func (m *mockLocalDownloadTracker) AssociateTorrentHash(hash, transferID string) error {
+	if m.hashToID == nil {
+		m.hashToID = make(map[string]string)
+	}
+	if m.idToHash == nil {
+		m.idToHash = make(map[string]string)
+	}
+	m.hashToID[hash] = transferID
+	m.idToHash[transferID] = hash
+	return nil
+}
+
+func (m *mockLocalDownloadTracker) addTorrentID(hash, transferID string) {
+	if m.hashToID == nil {
+		m.hashToID = make(map[string]string)
+	}
+	if m.idToHash == nil {
+		m.idToHash = make(map[string]string)
+	}
+	m.hashToID[hash] = transferID
+	m.idToHash[transferID] = hash
+}
+
+func (m *mockLocalDownloadTracker) GetTorrentHash(transferID string) (string, error) {
+	if m.idToHash == nil {
+		return "", nil
+	}
+	return m.idToHash[transferID], nil
+}
+
+func (m *mockLocalDownloadTracker) ResolveTorrentID(hash string) (string, error) {
+	if m.hashToID == nil {
+		return "", nil
+	}
+	return m.hashToID[hash], nil
+}
+
+func (m *mockLocalDownloadTracker) DeleteTorrentSeedCriteria(hash string) error {
+	delete(m.criteria, hash)
+	delete(m.hashToID, hash)
+	return nil
 }
 
 // mockPutioClient implements DownloadClient interface for testing.
@@ -50,7 +142,7 @@ func (m *mockPutioClient) AddTransfer(ctx context.Context, magnetLink, parentNam
 	if m.addTransferFunc != nil {
 		return m.addTransferFunc(ctx, magnetLink, parentName)
 	}
-	return &transfer.Transfer{ID: "mock-transfer-id", Name: "mock-transfer"}, nil
+	return &transfer.Transfer{ID: "12345", Name: "mock-transfer"}, nil
 }
 
 func (m *mockPutioClient) AddTransferByBytes(ctx context.Context, content []byte, filename, parentName string) (*transfer.Transfer, error) {
@@ -60,7 +152,7 @@ func (m *mockPutioClient) AddTransferByBytes(ctx context.Context, content []byte
 	if m.addTransferByBytesFunc != nil {
 		return m.addTransferByBytesFunc(ctx, content, filename, parentName)
 	}
-	return &transfer.Transfer{ID: "mock-transfer-id", Name: "mock-transfer"}, nil
+	return &transfer.Transfer{ID: "12345", Name: "mock-transfer"}, nil
 }
 
 func (m *mockPutioClient) GetTaggedTorrents(ctx context.Context, label string) ([]*transfer.Transfer, error) {
@@ -80,7 +172,8 @@ func (m *mockPutioClient) RemoveTransfers(ctx context.Context, ids []string, del
 
 func TestHandleTorrentRemove_RequestsPutioCleanup(t *testing.T) {
 	client := &mockPutioClient{}
-	handler := NewTransmissionHandler("testuser", "testpass", client, "test-label", "/downloads", "", nil, nil)
+	tracker := &mockLocalDownloadTracker{hashToID: map[string]string{"transfer-hash": "42"}, idToHash: map[string]string{"42": "transfer-hash"}}
+	handler := NewTransmissionHandler("testuser", "testpass", client, "test-label", "/downloads", "", tracker, nil)
 
 	reqBody := `{"method":"torrent-remove","arguments":{"ids":["transfer-hash"],"delete-local-data":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
@@ -93,8 +186,183 @@ func TestHandleTorrentRemove_RequestsPutioCleanup(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.Equal(t, "success", resp.Result)
 	require.True(t, client.removeTransfersCalled)
-	require.Equal(t, []string{"transfer-hash"}, client.removedIDs)
+	transferHash := sha1.Sum([]byte("42"))
+	require.Equal(t, []string{hex.EncodeToString(transferHash[:])}, client.removedIDs)
 	require.True(t, client.deleteLocalData)
+}
+
+func TestHandleTorrentSet_PersistsSeedCriteria(t *testing.T) {
+	ratio, idle := 1.0, int64(4320)
+	ratioMode, idleMode := int64(1), int64(1)
+	tracker := &mockLocalDownloadTracker{}
+	tracker.addTorrentID("abcdef", "42")
+	client := &mockPutioClient{}
+	handler := NewTransmissionHandler("testuser", "testpass", client, "test-label", "/downloads", "", tracker, nil)
+
+	reqBody := `{"method":"torrent-set","arguments":{"ids":["ABCDEF"],"seedRatioLimit":1,"seedRatioMode":1,"seedIdleLimit":4320,"seedIdleMode":1}}`
+	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
+	req.SetBasicAuth("testuser", "testpass")
+	w := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp TransmissionResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "success", resp.Result)
+	got := tracker.criteria["abcdef"]
+	require.NotNil(t, got.SeedRatioLimit)
+	require.Equal(t, ratio, *got.SeedRatioLimit)
+	require.NotNil(t, got.SeedRatioMode)
+	require.Equal(t, ratioMode, *got.SeedRatioMode)
+	require.NotNil(t, got.SeedIdleLimit)
+	require.Equal(t, idle, *got.SeedIdleLimit)
+	require.NotNil(t, got.SeedIdleMode)
+	require.Equal(t, idleMode, *got.SeedIdleMode)
+}
+
+func TestHandleTorrentSet_MapsLegacyNumericID(t *testing.T) {
+	tracker := &mockLocalDownloadTracker{}
+	client := &mockPutioClient{getTaggedTorrentsFunc: func(context.Context, string) ([]*transfer.Transfer, error) {
+		return []*transfer.Transfer{{ID: "42", Name: "legacy.mkv", Status: "SEEDING"}}, nil
+	}}
+	handler := NewTransmissionHandler("testuser", "testpass", client, "label", "/downloads", "", tracker, nil)
+	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(`{"method":"torrent-set","arguments":{"ids":["42"],"seedIdleLimit":4320,"seedIdleMode":1}}`))
+	req.SetBasicAuth("testuser", "testpass")
+	w := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "42", tracker.hashToID["42"])
+	criteria, err := tracker.GetTorrentSeedCriteria("42", "42")
+	require.NoError(t, err)
+	require.NotNil(t, criteria.SeedIdleLimit)
+	require.Equal(t, int64(4320), *criteria.SeedIdleLimit)
+}
+
+func TestHandleTorrentStopAndStart(t *testing.T) {
+	for _, test := range []struct {
+		method      string
+		wantStopped bool
+	}{
+		{method: "torrent-stop", wantStopped: true},
+		{method: "torrent-start", wantStopped: false},
+	} {
+		t.Run(test.method, func(t *testing.T) {
+			tracker := &mockLocalDownloadTracker{}
+			tracker.addTorrentID("hash", "42")
+			handler := NewTransmissionHandler("testuser", "testpass", &mockPutioClient{}, "label", "/downloads", "", tracker, nil)
+			reqBody := fmt.Sprintf(`{"method":%q,"arguments":{"ids":["hash"]}}`, test.method)
+			req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
+			req.SetBasicAuth("testuser", "testpass")
+			w := httptest.NewRecorder()
+			handler.Routes().ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusOK, w.Code)
+			criteria, err := tracker.GetTorrentSeedCriteria("42", "hash")
+			require.NoError(t, err)
+			require.NotNil(t, criteria.Stopped)
+			require.Equal(t, test.wantStopped, *criteria.Stopped)
+		})
+	}
+}
+
+func TestTransmissionHash_UsesMagnetInfoHash(t *testing.T) {
+	req := &TransmissionRequest{}
+	req.Arguments.FileName = "magnet:?xt=urn:btih:0123456789012345678901234567890123456789&dn=release"
+
+	hash, err := transmissionHash(req, "42")
+	require.NoError(t, err)
+	require.Equal(t, "0123456789012345678901234567890123456789", hash)
+}
+
+func TestHandleTorrentAdd_AssociatesTorrentInfoHash(t *testing.T) {
+	torrentBytes := []byte("d4:infod4:name4:testee")
+	tracker := &mockLocalDownloadTracker{hashToID: map[string]string{"abcdef": "42"}}
+	client := &mockPutioClient{addTransferByBytesFunc: func(context.Context, []byte, string, string) (*transfer.Transfer, error) {
+		return &transfer.Transfer{ID: "42", Name: "release.mkv"}, nil
+	}}
+	handler := NewTransmissionHandler("testuser", "testpass", client, "label", "/downloads", "", tracker, nil)
+	reqBody := fmt.Sprintf(`{"method":"torrent-add","arguments":{"metainfo":%q}}`, base64.StdEncoding.EncodeToString(torrentBytes))
+	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(reqBody))
+	req.SetBasicAuth("testuser", "testpass")
+	w := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var response TransmissionResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	var args struct {
+		TorrentAdded struct {
+			ID         string `json:"id"`
+			HashString string `json:"hashString"`
+		} `json:"torrent-added"`
+	}
+	require.NoError(t, json.Unmarshal(response.Arguments, &args))
+	seedRequest := &TransmissionRequest{}
+	seedRequest.Arguments.MetaInfo = base64.StdEncoding.EncodeToString(torrentBytes)
+	infoHash, err := transmissionHash(seedRequest, "42")
+	require.NoError(t, err)
+	require.Equal(t, "42", args.TorrentAdded.ID)
+	require.Equal(t, infoHash, args.TorrentAdded.HashString)
+	require.Equal(t, "42", tracker.hashToID[infoHash])
+}
+
+func TestHandleTorrentGet_UsesTorrentHashAndSeedCriteria(t *testing.T) {
+	tracker := &mockLocalDownloadTracker{}
+	tracker.addTorrentID("real-info-hash", "42")
+	ratio := 1.0
+	ratioMode := int64(1)
+	require.NoError(t, tracker.UpdateTorrentSeedCriteria("real-info-hash", storage.TorrentSeedCriteria{
+		SeedRatioLimit: &ratio,
+		SeedRatioMode:  &ratioMode,
+	}))
+	client := &mockPutioClient{getTaggedTorrentsFunc: func(context.Context, string) ([]*transfer.Transfer, error) {
+		return []*transfer.Transfer{{
+			ID: "42", Name: "release.mkv", Status: "SEEDING", Size: 100,
+			Downloaded: 100, Uploaded: 100,
+		}}, nil
+	}}
+	handler := NewTransmissionHandler("testuser", "testpass", client, "label", "/downloads", "", tracker, nil)
+	torrents := getTorrents(t, handler)
+	require.Len(t, torrents, 1)
+	require.Equal(t, "real-info-hash", torrents[0].HashString)
+	require.Equal(t, StatusStopped, torrents[0].Status)
+}
+
+func TestBuildTransmissionTorrent_StopsAtSeedGoals(t *testing.T) {
+	ratioLimit := 1.0
+	ratioMode := int64(1)
+	idleLimit := int64(4320)
+	idleMode := int64(1)
+	tests := []struct {
+		name       string
+		uploaded   int64
+		seeding    int64
+		wantStatus TransmissionTorrentStatus
+	}{
+		{name: "below goals", uploaded: 999, seeding: 100, wantStatus: StatusSeed},
+		{name: "ratio reached", uploaded: 1000, seeding: 100, wantStatus: StatusStopped},
+		{name: "time reached", uploaded: 100, seeding: 4320*60 + 1, wantStatus: StatusStopped},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewTransmissionHandler("user", "pass", &mockPutioClient{}, "label", "/downloads", "", nil, nil)
+			got, err := handler.buildTransmissionTorrent(context.Background(), &transfer.Transfer{
+				ID: "42", Name: "release.mkv", Status: "SEEDING", Size: 1000,
+				Downloaded: 1000, Uploaded: tt.uploaded, SecondsSeeding: tt.seeding,
+			}, "downloaded", storage.TorrentSeedCriteria{
+				SeedRatioLimit: &ratioLimit,
+				SeedRatioMode:  &ratioMode,
+				SeedIdleLimit:  &idleLimit,
+				SeedIdleMode:   &idleMode,
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.wantStatus, got.Status)
+			require.Equal(t, float32(1), got.SeedRatioLimit)
+			require.Equal(t, uint64(4320), got.SeedIdleLimit)
+		})
+	}
 }
 
 func TestValidateBencodeStructure(t *testing.T) {

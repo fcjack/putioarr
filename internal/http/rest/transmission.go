@@ -3,13 +3,16 @@ package rest
 import (
 	"context"
 	"crypto/sha1"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -24,6 +27,11 @@ import (
 const sessionID = "useless-session-id"
 
 const maxTorrentSize = 10 * 1024 * 1024 // 10MB - matches Phase 4 limit
+
+const (
+	defaultSeedRatioLimit  = 1.0
+	defaultSeedTimeMinutes = 4320
+)
 
 // DownloadClient defines the interface for torrent client operations.
 // This interface enables mocking in tests while the production code uses *putio.Client.
@@ -90,10 +98,10 @@ type TransmissionRequest struct {
 		DownloadDir     string   `json:"download-dir"`
 		Labels          []string `json:"labels"`
 		MetaInfo        string   `json:"metainfo"`
-		SeedRationLimit float64  `json:"seedRatioLimit"`
-		SeedRatioMode   int64    `json:"seedRatioMode"`
-		SeedIdleLimit   int64    `json:"seedIdleLimit"`
-		SeedIdleMode    int64    `json:"seedIdleMode"`
+		SeedRatioLimit  *float64 `json:"seedRatioLimit"`
+		SeedRatioMode   *int64   `json:"seedRatioMode"`
+		SeedIdleLimit   *int64   `json:"seedIdleLimit"`
+		SeedIdleMode    *int64   `json:"seedIdleMode"`
 		DeleteLocalData bool     `json:"delete-local-data"`
 	} `json:"arguments"`
 }
@@ -113,9 +121,9 @@ func NewTransmissionConfig(downloadDir string) *TransmissionConfig {
 		RPCVersion:              "18",
 		Version:                 "14.0.0",
 		DownloadDir:             downloadDir,
-		SeedRatioLimit:          1.0,
+		SeedRatioLimit:          defaultSeedRatioLimit,
 		SeedRatioLimited:        true,
-		IdleSeedingLimit:        100,
+		IdleSeedingLimit:        0,
 		IdleSeedingLimitEnabled: false,
 	}
 }
@@ -123,6 +131,10 @@ func NewTransmissionConfig(downloadDir string) *TransmissionConfig {
 // LocalDownloadTracker exposes persisted local download state for Transmission RPC.
 type LocalDownloadTracker interface {
 	GetDownloads() ([]storage.DownloadRecord, error)
+}
+
+type TorrentSeedCriteriaTracker interface {
+	storage.TorrentSeedCriteriaRepository
 }
 
 type TransmissionHandler struct {
@@ -133,6 +145,7 @@ type TransmissionHandler struct {
 	downloadDir      string
 	localDownloadDir string
 	localDownloads   LocalDownloadTracker
+	seedCriteria     TorrentSeedCriteriaTracker
 	telemetry        *telemetry.Telemetry
 }
 
@@ -146,7 +159,7 @@ func NewTransmissionHandler(
 	localDownloads LocalDownloadTracker,
 	t *telemetry.Telemetry,
 ) *TransmissionHandler {
-	return &TransmissionHandler{
+	handler := &TransmissionHandler{
 		username:         username,
 		password:         password,
 		dc:               dc,
@@ -156,6 +169,11 @@ func NewTransmissionHandler(
 		localDownloads:   localDownloads,
 		telemetry:        t,
 	}
+	if tracker, ok := localDownloads.(TorrentSeedCriteriaTracker); ok {
+		handler.seedCriteria = tracker
+	}
+
+	return handler
 }
 
 func (h *TransmissionHandler) Routes() http.Handler {
@@ -169,6 +187,8 @@ func (h *TransmissionHandler) Routes() http.Handler {
 }
 
 // HandleRPC responsible to receive the callback from a webhook.
+//
+//nolint:funlen // RPC method dispatch and protocol response handling stay together.
 func (h *TransmissionHandler) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logctx.LoggerFromContext(ctx)
@@ -207,10 +227,11 @@ func (h *TransmissionHandler) HandleRPC(w http.ResponseWriter, r *http.Request) 
 	case "torrent-get":
 		response, err = h.handleTorrentGet(ctx)
 	case "torrent-set":
-		// Nothing to do here
-		response = &TransmissionResponse{
-			Result: "success",
-		}
+		response, err = h.handleTorrentSet(ctx, &req)
+	case "torrent-start":
+		response, err = h.handleTorrentStart(ctx, &req)
+	case "torrent-stop":
+		response, err = h.handleTorrentStop(ctx, &req)
 	case "queue-move-top":
 		// Nothing to do here
 		response = &TransmissionResponse{
@@ -396,14 +417,31 @@ func (h *TransmissionHandler) handleTorrentAdd(ctx context.Context, req *Transmi
 		return nil, err
 	}
 
+	if h.seedCriteria != nil {
+		hash, err := transmissionHash(req, torrent.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := h.seedCriteria.AssociateTorrentHash(hash, torrent.ID); err != nil {
+			return nil, fmt.Errorf("associate torrent hash with Put.io transfer: %w", err)
+		}
+	}
+
 	// Marshal success response (Transmission format with torrent-added)
+	hash, err := transmissionHash(req, torrent.ID)
+	if err != nil {
+		return nil, err
+	}
+
 	jsonTorrent, err := json.Marshal(map[string]interface{}{
 		"torrent-added": map[string]interface{}{
 			"id":         torrent.ID,
 			"name":       torrent.Name,
-			"hashString": torrent.ID,
+			"hashString": hash,
 		},
 	})
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal torrent: %w", err)
 	}
@@ -412,6 +450,157 @@ func (h *TransmissionHandler) handleTorrentAdd(ctx context.Context, req *Transmi
 		Result:    "success",
 		Arguments: jsonTorrent,
 	}, nil
+}
+
+func transmissionHash(req *TransmissionRequest, transferID string) (string, error) {
+	if req.Arguments.MetaInfo != "" {
+		return infoHashFromMetainfo(req.Arguments.MetaInfo)
+	}
+
+	if hash := infoHashFromMagnet(req.Arguments.FileName); hash != "" {
+		return hash, nil
+	}
+
+	return syntheticTorrentHash(transferID), nil
+}
+
+func infoHashFromMetainfo(encoded string) (string, error) {
+	metainfo, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("decode torrent metainfo for infohash: %w", err)
+	}
+
+	var torrent map[string]bencode.RawMessage
+	if err := bencode.DecodeBytes(metainfo, &torrent); err != nil {
+		return "", fmt.Errorf("decode torrent metainfo for infohash: %w", err)
+	}
+
+	info, ok := torrent["info"]
+	if !ok {
+		return "", fmt.Errorf("torrent metainfo has no info dictionary")
+	}
+
+	sum := sha1.Sum(info)
+
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func infoHashFromMagnet(magnet string) string {
+	parsed, err := url.Parse(magnet)
+	if err != nil {
+		return ""
+	}
+
+	for _, xt := range parsed.Query()["xt"] {
+		if !strings.HasPrefix(strings.ToLower(xt), "urn:btih:") {
+			continue
+		}
+
+		value := xt[len("urn:btih:"):]
+
+		if len(value) == sha1.Size*2 {
+			_, decodeErr := hex.DecodeString(value)
+			if decodeErr == nil {
+				return strings.ToLower(value)
+			}
+		}
+
+		if len(value) == 32 {
+			decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(value))
+			if err == nil && len(decoded) == sha1.Size {
+				return hex.EncodeToString(decoded)
+			}
+		}
+	}
+
+	return ""
+}
+
+func syntheticTorrentHash(transferID string) string {
+	sum := sha1.Sum([]byte(transferID))
+
+	return hex.EncodeToString(sum[:])
+}
+
+func (h *TransmissionHandler) handleTorrentSet(ctx context.Context, req *TransmissionRequest) (*TransmissionResponse, error) {
+	if h.seedCriteria == nil {
+		return nil, fmt.Errorf("torrent seed criteria storage is unavailable")
+	}
+
+	if len(req.Arguments.IDs) == 0 {
+		return nil, fmt.Errorf("torrent-set requires at least one torrent ID")
+	}
+
+	if err := h.ensureTorrentHashMappings(ctx, req.Arguments.IDs); err != nil {
+		return nil, err
+	}
+
+	for _, hash := range req.Arguments.IDs {
+		hash = strings.ToLower(hash)
+		criteria := storage.TorrentSeedCriteria{
+			SeedRatioLimit: req.Arguments.SeedRatioLimit,
+			SeedRatioMode:  req.Arguments.SeedRatioMode,
+			SeedIdleLimit:  req.Arguments.SeedIdleLimit,
+			SeedIdleMode:   req.Arguments.SeedIdleMode,
+		}
+
+		if invalidSeedRatioLimit(criteria.SeedRatioLimit) {
+			return nil, fmt.Errorf("seedRatioLimit must be a finite non-negative number")
+		}
+
+		if criteria.SeedRatioMode != nil && (*criteria.SeedRatioMode < 0 || *criteria.SeedRatioMode > 2) {
+			return nil, fmt.Errorf("seedRatioMode must be 0, 1, or 2")
+		}
+
+		if criteria.SeedIdleLimit != nil && *criteria.SeedIdleLimit < 0 {
+			return nil, fmt.Errorf("seedIdleLimit must be non-negative")
+		}
+
+		if criteria.SeedIdleMode != nil && (*criteria.SeedIdleMode < 0 || *criteria.SeedIdleMode > 2) {
+			return nil, fmt.Errorf("seedIdleMode must be 0, 1, or 2")
+		}
+
+		if err := h.seedCriteria.UpdateTorrentSeedCriteria(hash, criteria); err != nil {
+			return nil, fmt.Errorf("persist seed criteria for torrent %s: %w", hash, err)
+		}
+	}
+
+	return &TransmissionResponse{Result: "success"}, nil
+}
+
+func (h *TransmissionHandler) handleTorrentStart(ctx context.Context, req *TransmissionRequest) (*TransmissionResponse, error) {
+	return h.updateTorrentState(ctx, req.Arguments.IDs, false)
+}
+
+func (h *TransmissionHandler) handleTorrentStop(ctx context.Context, req *TransmissionRequest) (*TransmissionResponse, error) {
+	return h.updateTorrentState(ctx, req.Arguments.IDs, true)
+}
+
+func (h *TransmissionHandler) updateTorrentState(ctx context.Context, hashes []string, stopped bool) (*TransmissionResponse, error) {
+	if h.seedCriteria == nil {
+		return nil, fmt.Errorf("torrent state storage is unavailable")
+	}
+
+	if len(hashes) == 0 {
+		return nil, fmt.Errorf("torrent state update requires at least one torrent ID")
+	}
+
+	if err := h.ensureTorrentHashMappings(ctx, hashes); err != nil {
+		return nil, err
+	}
+
+	for _, hash := range hashes {
+		criteria := storage.TorrentSeedCriteria{Stopped: &stopped}
+		if err := h.seedCriteria.UpdateTorrentSeedCriteria(strings.ToLower(hash), criteria); err != nil {
+			return nil, fmt.Errorf("persist state for torrent %s: %w", hash, err)
+		}
+	}
+
+	return &TransmissionResponse{Result: "success"}, nil
+}
+
+func invalidSeedRatioLimit(limit *float64) bool {
+	return limit != nil && (*limit < 0 || math.IsNaN(*limit) || math.IsInf(*limit, 0))
 }
 
 // resolveTorrent determines the torrent source (metainfo or magnet) and adds the transfer.
@@ -456,13 +645,108 @@ func (h *TransmissionHandler) handleTorrentRemove(ctx context.Context, req *Tran
 	logger := logctx.LoggerFromContext(ctx)
 	logger.DebugContext(ctx, "received torrent remove request")
 
-	if err := h.dc.RemoveTransfers(ctx, req.Arguments.IDs, req.Arguments.DeleteLocalData); err != nil {
+	transferIDs := req.Arguments.IDs
+
+	if h.seedCriteria != nil {
+		var err error
+		transferIDs, err = h.resolveTransferIDs(ctx, req.Arguments.IDs)
+
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if len(transferIDs) == 0 {
+		return &TransmissionResponse{Result: "success"}, nil
+	}
+
+	err := h.dc.RemoveTransfers(ctx, transferIDs, req.Arguments.DeleteLocalData)
+	if err != nil {
 		return nil, fmt.Errorf("failed to remove transfers: %w", err)
+	}
+
+	if h.seedCriteria != nil {
+		for _, hash := range req.Arguments.IDs {
+			if err := h.seedCriteria.DeleteTorrentSeedCriteria(strings.ToLower(hash)); err != nil {
+				logger.WarnContext(ctx, "failed to delete torrent seed criteria", "hash", hash, "err", err)
+			}
+		}
 	}
 
 	return &TransmissionResponse{
 		Result: "success",
 	}, nil
+}
+
+func (h *TransmissionHandler) resolveTransferIDs(ctx context.Context, hashes []string) ([]string, error) {
+	if err := h.ensureTorrentHashMappings(ctx, hashes); err != nil {
+		return nil, err
+	}
+
+	transfers, err := h.dc.GetTaggedTorrents(ctx, h.label)
+	if err != nil {
+		return nil, fmt.Errorf("list transfers to resolve torrent hashes: %w", err)
+	}
+
+	transferIDs := make([]string, 0, len(hashes))
+
+	for _, hash := range hashes {
+		transferID, err := h.seedCriteria.ResolveTorrentID(strings.ToLower(hash))
+		if err != nil {
+			return nil, fmt.Errorf("resolve transfer for torrent %s: %w", hash, err)
+		}
+
+		if transferID == "" {
+			transferID = findTransferByHash(transfers, hash)
+		}
+
+		if transferID == "" {
+			return nil, fmt.Errorf("torrent %s not found", hash)
+		}
+
+		transferIDs = append(transferIDs, syntheticTorrentHash(transferID))
+	}
+
+	return transferIDs, nil
+}
+
+func (h *TransmissionHandler) ensureTorrentHashMappings(ctx context.Context, hashes []string) error {
+	transfers, err := h.dc.GetTaggedTorrents(ctx, h.label)
+	if err != nil {
+		return fmt.Errorf("list transfers to resolve torrent hashes: %w", err)
+	}
+
+	for _, hash := range hashes {
+		resolved, err := h.seedCriteria.ResolveTorrentID(strings.ToLower(hash))
+		if err != nil {
+			return fmt.Errorf("resolve transfer for torrent %s: %w", hash, err)
+		}
+
+		if resolved != "" {
+			continue
+		}
+
+		resolved = findTransferByHash(transfers, hash)
+		if resolved == "" {
+			return fmt.Errorf("torrent %s not found", hash)
+		}
+
+		if err := h.seedCriteria.AssociateTorrentHash(strings.ToLower(hash), resolved); err != nil {
+			return fmt.Errorf("associate torrent %s with transfer: %w", hash, err)
+		}
+	}
+
+	return nil
+}
+
+func findTransferByHash(transfers []*transfer.Transfer, hash string) string {
+	for _, item := range transfers {
+		if item.ID == hash || strings.EqualFold(syntheticTorrentHash(item.ID), hash) || strings.EqualFold(infoHashFromMagnet(item.MagnetURI), hash) {
+			return item.ID
+		}
+	}
+
+	return ""
 }
 
 // shouldGateLocalImport reports whether Put.io considers the remote transfer done enough
@@ -494,10 +778,12 @@ func localDownloadStatusMap(records []storage.DownloadRecord) map[string]string 
 	return statuses
 }
 
+//nolint:cyclop,funlen,gocyclo // Transmission status conversion has independent state and import gates.
 func (h *TransmissionHandler) buildTransmissionTorrent(
 	ctx context.Context,
 	transfer *transfer.Transfer,
 	localStatus string,
+	criteria storage.TorrentSeedCriteria,
 ) (TransmissionTorrent, error) {
 	logger := logctx.LoggerFromContext(ctx)
 
@@ -571,6 +857,16 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 	}
 
 	hashBytes := sha1.Sum([]byte(transfer.ID))
+	seedRatioLimit, seedRatioMode := seedRatioCriteria(criteria)
+	seedIdleLimit, seedIdleMode := seedIdleCriteria(criteria)
+
+	if criteria.Stopped != nil && *criteria.Stopped {
+		status = StatusStopped
+	}
+
+	if seedGoalReached(transfer, status, seedRatioLimit, seedRatioMode, seedIdleLimit, seedIdleMode) {
+		status = StatusStopped
+	}
 
 	return TransmissionTorrent{
 		ID:                 id,
@@ -593,11 +889,49 @@ func (h *TransmissionHandler) buildTransmissionTorrent(
 		PeersGettingFromUs: transfer.PeersGettingFromUs,
 		RateDownload:       transfer.DownloadSpeed,
 		FileCount:          uint32(len(transfer.Files)),
-		SeedRatioLimit:     1.0,
-		SeedRatioMode:      1,
-		SeedIdleLimit:      100,
-		SeedIdleMode:       1,
+		SeedRatioLimit:     seedRatioLimit,
+		SeedRatioMode:      uint32(seedRatioMode),
+		SeedIdleLimit:      uint64(seedIdleLimit),
+		SeedIdleMode:       uint32(seedIdleMode),
 	}, nil
+}
+
+func seedGoalReached(t *transfer.Transfer, status TransmissionTorrentStatus, ratioLimit float32, ratioMode int64, idleLimit, idleMode int64) bool {
+	if status != StatusSeed && status != StatusSeedWait {
+		return false
+	}
+
+	ratio := uploadRatio(t.Uploaded, t.Downloaded)
+	ratioReached := ratioMode == 1 && ratio >= float64(ratioLimit) || ratioMode == 0 && ratio >= 1
+	idleReached := idleMode == 1 && t.SecondsSeeding > idleLimit*60
+
+	return ratioReached || idleReached
+}
+
+func seedRatioCriteria(criteria storage.TorrentSeedCriteria) (float32, int64) {
+	limit, mode := float32(defaultSeedRatioLimit), int64(1)
+	if criteria.SeedRatioLimit != nil {
+		limit = float32(*criteria.SeedRatioLimit)
+	}
+
+	if criteria.SeedRatioMode != nil {
+		mode = *criteria.SeedRatioMode
+	}
+
+	return limit, mode
+}
+
+func seedIdleCriteria(criteria storage.TorrentSeedCriteria) (int64, int64) {
+	limit, mode := int64(defaultSeedTimeMinutes), int64(1)
+	if criteria.SeedIdleLimit != nil {
+		limit = *criteria.SeedIdleLimit
+	}
+
+	if criteria.SeedIdleMode != nil {
+		mode = *criteria.SeedIdleMode
+	}
+
+	return limit, mode
 }
 
 func uploadRatio(uploaded, downloaded int64) float64 {
@@ -637,12 +971,43 @@ func (h *TransmissionHandler) handleTorrentGet(ctx context.Context) (*Transmissi
 	transmissionTorrents := make([]TransmissionTorrent, 0, torrentsCount)
 
 	for _, transfer := range transfers {
-		torrent, err := h.buildTransmissionTorrent(ctx, transfer, localStatuses[transfer.ID])
+		hash := syntheticTorrentHash(transfer.ID)
+		if magnetHash := infoHashFromMagnet(transfer.MagnetURI); magnetHash != "" {
+			hash = magnetHash
+		}
+
+		if h.seedCriteria != nil {
+			if mappedHash, mapErr := h.seedCriteria.GetTorrentHash(transfer.ID); mapErr != nil {
+				logger.WarnContext(ctx, "failed to load torrent hash", "transfer_id", transfer.ID, "err", mapErr)
+			} else if mappedHash != "" {
+				hash = mappedHash
+			}
+		}
+
+		var criteria storage.TorrentSeedCriteria
+
+		if h.seedCriteria != nil {
+			criteria, err = h.seedCriteria.GetTorrentSeedCriteria(transfer.ID, hash)
+			if err != nil {
+				logger.WarnContext(ctx, "failed to load torrent seed criteria", "hash", hash, "err", err)
+
+				criteria = storage.TorrentSeedCriteria{}
+			}
+
+			if criteria.Stopped == nil {
+				stopped := false
+				criteria.Stopped = &stopped
+			}
+		}
+
+		torrent, err := h.buildTransmissionTorrent(ctx, transfer, localStatuses[transfer.ID], criteria)
 		if err != nil {
 			logger.ErrorContext(ctx, "failed to build transmission torrent", "transfer_id", transfer.ID, "err", err)
 
 			continue
 		}
+
+		torrent.HashString = hash
 
 		transmissionTorrents = append(transmissionTorrents, torrent)
 	}

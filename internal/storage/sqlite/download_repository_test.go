@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -66,6 +67,79 @@ func TestClaimTransferPersistsName(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	require.Equal(t, "The Matrix (1999)", records[0].Name)
+}
+
+func TestTorrentSeedCriteriaRoundTripAndPartialUpdate(t *testing.T) {
+	t.Parallel()
+	repo := newTestRepo(t)
+
+	ratio, idle := 1.0, int64(4320)
+	ratioMode, idleMode := int64(1), int64(1)
+	require.NoError(t, repo.AssociateTorrentHash("hash", "42"))
+	require.NoError(t, repo.UpdateTorrentSeedCriteria("hash", storage.TorrentSeedCriteria{
+		SeedRatioLimit: &ratio,
+		SeedRatioMode:  &ratioMode,
+		SeedIdleLimit:  &idle,
+		SeedIdleMode:   &idleMode,
+	}))
+
+	got, err := repo.GetTorrentSeedCriteria("42", "other-hash")
+	require.NoError(t, err)
+	require.NotNil(t, got.SeedRatioLimit)
+	require.Equal(t, ratio, *got.SeedRatioLimit)
+	require.NotNil(t, got.SeedIdleLimit)
+	require.Equal(t, idle, *got.SeedIdleLimit)
+
+	newIdle := int64(1440)
+	require.NoError(t, repo.UpdateTorrentSeedCriteria("hash", storage.TorrentSeedCriteria{SeedIdleLimit: &newIdle}))
+	got, err = repo.GetTorrentSeedCriteria("42", "other-hash")
+	require.NoError(t, err)
+	require.Equal(t, ratio, *got.SeedRatioLimit, "partial updates preserve other criteria")
+	require.Equal(t, newIdle, *got.SeedIdleLimit)
+	stopped := true
+	require.NoError(t, repo.UpdateTorrentSeedCriteria("hash", storage.TorrentSeedCriteria{Stopped: &stopped}))
+	got, err = repo.GetTorrentSeedCriteria("42", "other-hash")
+	require.NoError(t, err)
+	require.NotNil(t, got.Stopped)
+	require.True(t, *got.Stopped)
+
+	got, err = repo.GetTorrentSeedCriteria("42", "other-hash")
+	require.NoError(t, err)
+	resolved, err := repo.ResolveTorrentID("hash")
+	require.NoError(t, err)
+	require.Equal(t, "42", resolved)
+	resolvedHash, err := repo.GetTorrentHash("42")
+	require.NoError(t, err)
+	require.Equal(t, "hash", resolvedHash)
+
+	require.NoError(t, repo.DeleteTorrentSeedCriteria("hash"))
+	got, err = repo.GetTorrentSeedCriteria("42", "other-hash")
+	require.NoError(t, err)
+	require.Nil(t, got.SeedRatioLimit)
+	require.Nil(t, got.SeedIdleLimit)
+	resolved, err = repo.ResolveTorrentID("hash")
+	require.NoError(t, err)
+	require.Empty(t, resolved)
+}
+
+func TestTorrentSeedCriteriaMigrationAddsTransferIDToExistingTable(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE torrent_seed_criteria (
+		hash TEXT PRIMARY KEY,
+		seed_ratio_limit REAL,
+		seed_ratio_mode INTEGER,
+		seed_idle_limit INTEGER,
+		seed_idle_mode INTEGER
+	)`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	db, err = InitDB(context.Background(), dbPath, 1, 1)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
 }
 
 func TestClaimTransferBackfillsLegacyName(t *testing.T) {

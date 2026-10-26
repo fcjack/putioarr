@@ -207,7 +207,7 @@ Once any configured *Arr app confirms a release was imported (Sonarr/Radarr `dow
 - **Folder / season pack** → the whole `DOWNLOAD_DIR/<release>/` directory (all episodes and sidecars like `.nfo`/`.srt`) is deleted.
 - Empty parent directories are then pruned up to (but never including) `DOWNLOAD_DIR`.
 
-Local cleanup still follows `CLEANUP_AFTER_IMPORT`. Import confirmation no longer deletes the Put.io transfer: Sonarr/Radarr retain it until configured seed ratio or seeding-time limit is met, then send `torrent-remove` to putioarr. Put.io upload totals and seeding time are exposed through Transmission RPC for that decision.
+Local cleanup still follows `CLEANUP_AFTER_IMPORT`. Import confirmation no longer deletes the Put.io transfer: Sonarr/Radarr retain it until configured seed ratio or seeding-time limit is met, then send `torrent-remove` to putioarr. putioarr persists per-torrent Transmission seed goals received through `torrent-set` and reports the transfer as stopped once either configured goal is met. For transfers without saved goals, proxy defaults are ratio `1.0` or seeding time `4320` minutes. Put.io upload totals and seeding time are exposed through Transmission RPC for that decision.
 
 A background **sweep job** runs daily (`CLEANUP_SWEEP_INTERVAL`, default `24h`) as a safety net for orphans left by crashes or partial imports: it prunes empty directories under `DOWNLOAD_DIR` that are older than `CLEANUP_SWEEP_MIN_AGE` (default `24h`), so in-progress downloads are never touched. Set `CLEANUP_SWEEP_INTERVAL=0` to disable it.
 

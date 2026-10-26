@@ -41,6 +41,69 @@ func (r *InstrumentedDownloadRepository) GetDownloads() ([]storage.DownloadRecor
 	return result, nil
 }
 
+// AssociateTorrentHash stores a Transmission hash mapping with telemetry.
+func (r *InstrumentedDownloadRepository) AssociateTorrentHash(hash, transferID string) error {
+	return r.telemetry.InstrumentDBOperation(context.Background(), "associate_torrent_hash", func(ctx context.Context) error {
+		return r.repo.AssociateTorrentHash(hash, transferID)
+	})
+}
+
+// UpdateTorrentSeedCriteria stores per-torrent Transmission limits with telemetry.
+func (r *InstrumentedDownloadRepository) UpdateTorrentSeedCriteria(hash string, criteria storage.TorrentSeedCriteria) error {
+	return r.telemetry.InstrumentDBOperation(context.Background(), "update_torrent_seed_criteria", func(ctx context.Context) error {
+		return r.repo.UpdateTorrentSeedCriteria(hash, criteria)
+	})
+}
+
+// GetTorrentHash retrieves the original Transmission hash for a Put.io transfer.
+func (r *InstrumentedDownloadRepository) GetTorrentHash(transferID string) (string, error) {
+	var hash string
+
+	err := r.telemetry.InstrumentDBOperation(context.Background(), "get_torrent_hash", func(ctx context.Context) error {
+		var err error
+		hash, err = r.repo.GetTorrentHash(transferID)
+
+		return err
+	})
+
+	return hash, err
+}
+
+// GetTorrentSeedCriteria retrieves per-torrent Transmission limits with telemetry.
+func (r *InstrumentedDownloadRepository) GetTorrentSeedCriteria(transferID, hash string) (storage.TorrentSeedCriteria, error) {
+	var criteria storage.TorrentSeedCriteria
+
+	err := r.telemetry.InstrumentDBOperation(context.Background(), "get_torrent_seed_criteria", func(ctx context.Context) error {
+		var err error
+		criteria, err = r.repo.GetTorrentSeedCriteria(transferID, hash)
+
+		return err
+	})
+
+	return criteria, err
+}
+
+// ResolveTorrentID maps a Transmission infohash to a Put.io transfer ID with telemetry.
+func (r *InstrumentedDownloadRepository) ResolveTorrentID(hash string) (string, error) {
+	var transferID string
+
+	err := r.telemetry.InstrumentDBOperation(context.Background(), "resolve_torrent_id", func(ctx context.Context) error {
+		var err error
+		transferID, err = r.repo.ResolveTorrentID(hash)
+
+		return err
+	})
+
+	return transferID, err
+}
+
+// DeleteTorrentSeedCriteria removes per-torrent Transmission limits with telemetry.
+func (r *InstrumentedDownloadRepository) DeleteTorrentSeedCriteria(hash string) error {
+	return r.telemetry.InstrumentDBOperation(context.Background(), "delete_torrent_seed_criteria", func(ctx context.Context) error {
+		return r.repo.DeleteTorrentSeedCriteria(hash)
+	})
+}
+
 // GetByTransferID retrieves a single download record with telemetry.
 func (r *InstrumentedDownloadRepository) GetByTransferID(transferID string) (storage.DownloadRecord, error) {
 	var result storage.DownloadRecord

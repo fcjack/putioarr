@@ -41,6 +41,7 @@ type Transfer struct {
 	SecondsSeeding     int64
 	Size               int64
 	Source             string
+	MagnetURI          string
 	Status             string
 	Files              []*File
 }
