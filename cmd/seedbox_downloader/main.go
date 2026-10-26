@@ -12,7 +12,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/v5"
 	"github.com/italolelis/seedbox_downloader/internal/dc/putio"
 	"github.com/italolelis/seedbox_downloader/internal/downloader"
 	"github.com/italolelis/seedbox_downloader/internal/http/rest"
