@@ -10,7 +10,7 @@ require (
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/uuid v1.6.0
 	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/mattn/go-sqlite3 v1.14.52
+	github.com/mattn/go-sqlite3 v1.14.53
 	github.com/putdotio/go-putio v1.7.3
 	github.com/stretchr/testify v1.12.1
 	github.com/zeebo/bencode v1.0.0
